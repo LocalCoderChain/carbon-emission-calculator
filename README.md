@@ -55,8 +55,8 @@ carbon_calculator/
 ### 1. Clone the repository
 
 ```bash
-git clone <https://github.com/aryabarsode/Carbon_Calculator_App>
-cd Carbon_Calculator_App
+git clone https://github.com/LocalCoderChain/carbon-emission-calculator.git
+cd carbon-emission-calculator
 ```
 
 ### 2. Install dependencies needed

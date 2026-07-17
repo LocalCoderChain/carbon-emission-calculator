@@ -1,45 +1,46 @@
 """
-config/settings.py
-==================
-Application configuration. Edit DB_CONFIG to connect to MySQL.
+config/settings.py — Application configuration
+================================================
+Secrets (API keys, OAuth credentials, DB password) are read from environment
+variables — see .env.example for the expected keys. Create a local .env file
+(gitignored) with real values; python-dotenv loads it automatically below.
 """
 
 import os
+from dotenv import load_dotenv
 
-# ── DATABASE CONFIGURATION ────────────────────────────────────────────────────
-# Set use_mysql=True and fill in credentials to use MySQL.
-# When use_mysql=False (default), the app uses SQLite stored in the user's
-# home directory — zero setup required for end users.
-DB_CONFIG = {
-    "use_mysql":  False,            # ← Set True to use MySQL
-    "host":       "localhost",
-    "port":       3306,
-    "user":       "root",
-    "password":   "",               # ← Fill in MySQL password
-    "database":   "carbon_calculator",
-    "sqlite_path": os.path.join(
-        os.path.expanduser("~"),
-        "carbon_calculator.db"
-    ),
-}
+load_dotenv()
 
-# ── APP METADATA ──────────────────────────────────────────────────────────────
 APP_TITLE   = "Carbon Emission Calculator"
-APP_VERSION = "1.0.0"
-COMPANY     = "Atlas Copco"
+APP_VERSION = "1.2.0"
+BRAND       = "Atlas Copco"
 
-# ── ATLAS COPCO BRAND COLOURS ─────────────────────────────────────────────────
-BRAND = {
-    "primary":      "#00AEEF",   # Atlas Copco cyan/blue
-    "dark":         "#003057",   # Deep navy
-    "white":        "#FFFFFF",
-    "light_grey":   "#F4F6F8",
-    "mid_grey":     "#8D9BAD",
-    "text":         "#1A2B3C",
-    "success":      "#00A878",
-    "warning":      "#F5A623",
-    "danger":       "#E53935",
-    "card_bg":      "#FFFFFF",
-    "sidebar_bg":   "#003057",
-    "sidebar_text": "#FFFFFF",
+# ── Database ──────────────────────────────────────────────────────────────────
+DB_CONFIG = {
+    "use_mysql":   os.environ.get("DB_USE_MYSQL", "false").lower() == "true",
+    "sqlite_path": "carbon_calculator.db",         # SQLite file path
+    # MySQL settings (only used when use_mysql=True)
+    "host":     os.environ.get("DB_HOST", "localhost"),
+    "port":     int(os.environ.get("DB_PORT", "3306")),
+    "database": os.environ.get("DB_NAME", "carbon_db"),
+    "user":     os.environ.get("DB_USER", "root"),
+    "password": os.environ.get("DB_PASSWORD", ""),
 }
+
+# ── OpenRouteService API (automatic distance calculation) ─────────────────────
+# Free tier — 2,000 requests/day, no credit card required.
+#
+# How to get your free API key:
+#   1. Go to https://openrouteservice.org/dev/#/signup
+#   2. Register with an email address (free)
+#   3. After confirming your email, log in and go to Dashboard → Tokens
+#   4. Click "CREATE TOKEN" → give it any name → copy the key
+#   5. Paste it below (replace the empty string)
+#
+# Leave as "" to disable automatic distance — manual entry stays fully functional.
+ORS_API_KEY = os.environ.get("ORS_API_KEY", "")
+
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "your_client_id_here")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI  = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:8501")
+ADMIN_EMAILS         = [e.strip() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()]

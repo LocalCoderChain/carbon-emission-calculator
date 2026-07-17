@@ -4,6 +4,13 @@ __pycache__/
 build/
 dist/
 
+.env
 .env/
 venv/
+
+*.db
+*.lnk
+
+Streamlit Notes.txt
+Streamlit Study/
 

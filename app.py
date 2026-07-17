@@ -1,9 +1,11 @@
 """
 app.py — Carbon Emission Calculator
 Atlas Copco | Streamlit UI
+v1.3 — Product templates, auto-distance, Google SSO, Admin panel
 """
 
-import sys, os
+import sys
+import os
 
 if getattr(sys, "frozen", False):
     BASE_DIR = sys._MEIPASS
@@ -15,6 +17,12 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
+from auth import session as auth_session
+from auth.google_oauth import render_signin_link
+# Change these two lines at the top of app.py
+from auth_pages import login as login_page
+from auth_pages import admin as admin_page
+
 from utils.formulas import (
     calculate_all,
     TRANSPORT_FACTORS,
@@ -22,14 +30,16 @@ from utils.formulas import (
     EMISSION_FACTORS,
     BOX_CLEARANCE,
 )
-from database.db import DatabaseManager
-from config.settings import DB_CONFIG, APP_TITLE, APP_VERSION, BRAND
+from utils.distance import get_distance
+from database.db import DatabaseManager, ProductManager, UserManager, ConfigManager, SessionManager
+from config.settings import (
+    DB_CONFIG, APP_TITLE, APP_VERSION, BRAND,
+    ORS_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_REDIRECT_URI, ADMIN_EMAILS,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
-# CHANGE 1: no emoji page_icon, clean title
 # ─────────────────────────────────────────────────────────────────────────────
-st.write("Loading...")
 st.set_page_config(
     page_title="Carbon Emission Calculator",
     layout="wide",
@@ -37,7 +47,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CSS — unchanged from original, just kept as-is
+# CSS
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -254,7 +264,11 @@ section[data-testid="stSidebar"] hr { border-color: rgba(0,174,239,0.3); }
     letter-spacing: 0.5px !important;
     padding: 10px 28px !important;
     transition: background 0.2s !important;
-    text-transform: uppercase;
+    text-transform: none !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    width: auto !important;
+    min-width: fit-content !important;
 }
 .stButton > button:hover { background: #0097D1 !important; }
 
@@ -276,6 +290,16 @@ hr { border-color: #DDE4EC; margin: 16px 0; }
     border-radius: 4px;
     font-size: 0.84rem;
     color: #003057;
+    margin: 10px 0;
+}
+
+.warn-box {
+    background: #FFF8E1;
+    border-left: 4px solid #F5A623;
+    padding: 12px 16px;
+    border-radius: 4px;
+    font-size: 0.84rem;
+    color: #7A5200;
     margin: 10px 0;
 }
 
@@ -311,23 +335,143 @@ hr { border-color: #DDE4EC; margin: 16px 0; }
     text-transform: uppercase; letter-spacing: 2px;
     margin: 16px 0 6px 0; display: block; font-weight: 600;
 }
+
+.product-loaded-banner {
+    background: linear-gradient(90deg, #003057, #005288);
+    border: 1px solid #00AEEF;
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 0.84rem;
+    color: #FFFFFF;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
 </style>
 """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATABASE
+# DATABASE MANAGERS
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_db():
     return DatabaseManager(DB_CONFIG)
 
-db = get_db()
+@st.cache_resource
+def get_pm():
+    db_path = os.path.abspath(DB_CONFIG.get("sqlite_path", "carbon_calculator.db"))
+    return ProductManager(db_path)
+
+@st.cache_resource
+def get_um():
+    db_path = os.path.abspath(DB_CONFIG.get("sqlite_path", "carbon_calculator.db"))
+    return UserManager(db_path)
+
+@st.cache_resource
+def get_cfg():
+    db_path = os.path.abspath(DB_CONFIG.get("sqlite_path", "carbon_calculator.db"))
+    return ConfigManager(db_path)
+
+@st.cache_resource
+def get_sm():
+    db_path = os.path.abspath(DB_CONFIG.get("sqlite_path", "carbon_calculator.db"))
+    return SessionManager(db_path)
+
+db  = get_db()
+pm  = get_pm()
+um  = get_um()
+cfg = get_cfg()
+sm  = get_sm()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SESSION RESTORE / VALIDATION
+# ─────────────────────────────────────────────────────────────────────────────
+# A browser refresh wipes st.session_state, which would normally sign the
+# user out. To survive that, the session token lives in the URL query string
+# too, and gets validated against the DB on every run — this also lets an
+# admin revoke a specific session and have it take effect immediately.
+def _sync_session():
+    token = auth_session.get_session_token()
+
+    if not token:
+        token = st.query_params.get("session")
+        if not token:
+            return
+        record = sm.get_session(token)
+        if record and not record["revoked"]:
+            user = um.get_user_by_id(record["user_id"])
+            if user:
+                auth_session.login(user)
+                auth_session.set_session_token(token)
+                sm.touch(token)
+                return
+        st.query_params.pop("session", None)
+        return
+
+    record = sm.get_session(token)
+    if not record or record["revoked"]:
+        auth_session.logout()
+        st.query_params.pop("session", None)
+        st.warning("Your session was ended by an administrator. Please sign in again.")
+    else:
+        sm.touch(token)
+
+_sync_session()
+
+
+def _sign_out(token: str | None):
+    if token:
+        sm.delete_session(token)
+    auth_session.logout()
+    st.query_params.pop("session", None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def _pf(key: str, fallback=None):
+    return st.session_state.get(f"pf_{key}", fallback)
+
+def _load_product_into_state(fields: dict):
+    for k, v in fields.items():
+        if v is not None:
+            st.session_state[f"pf_{k}"] = v
+    st.session_state["product_loaded_name"] = fields.get("product_name", "")
+
+def render_auth_header():
+    user = auth_session.current_user()
+    header_cols = st.columns([6, 1])
+    with header_cols[1]:
+        if user:
+            role_badge = "🛡 Admin" if user.get("role") == "admin" else "👤"
+            with st.popover(f"{role_badge} {user.get('name', 'User').split()[0]}"):
+                st.markdown(f"**{user.get('name')}**")
+                st.markdown(f"*{user.get('email')}*")
+                st.markdown(f"Role: `{user.get('role')}`")
+                st.markdown("---")
+                if st.button("Sign Out", key="signout_btn"):
+                    _sign_out(auth_session.get_session_token())
+                    st.rerun()
+        else:
+            if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_ID != "your_client_id_here":
+                render_signin_link(
+                    GOOGLE_CLIENT_ID, GOOGLE_REDIRECT_URI,
+                    label="Sign In",
+                    css="display:block;width:100%;box-sizing:border-box;text-align:center;"
+                        "background:#00AEEF;color:#FFFFFF;padding:10px 0;border-radius:4px;"
+                        "font-weight:600;text-decoration:none;font-family:Barlow,sans-serif;"
+                        "font-size:0.95rem;",
+                )
+            elif st.button("Sign In", key="signin_header_btn", use_container_width=True):
+                st.session_state["show_login_page"] = True
+                st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
-# CHANGE 1: no emojis in nav items
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -339,11 +483,13 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown('<span class="sidebar-nav-label">Navigation</span>', unsafe_allow_html=True)
-    page = st.radio(
-        "Navigation",
-        ["Calculate Carbon Emissions", "My Calculations", "Settings"],
-        label_visibility="collapsed"
-    )
+
+    _user = auth_session.current_user()
+    nav_options = ["Calculate Carbon Emissions", "My Calculations", "Product Catalog", "Settings"]
+    if _user and _user.get("role") == "admin":
+        nav_options.append("Admin")
+
+    page = st.radio("", nav_options, key="nav_page", label_visibility="collapsed")
 
     st.markdown("---")
     ok, msg = db.test_connection()
@@ -354,6 +500,23 @@ with st.sidebar:
         st.markdown('<div style="font-size:0.72rem;color:#F5A623;">◆ &nbsp;SQLite (local)</div>',
                     unsafe_allow_html=True)
 
+    if ORS_API_KEY:
+        st.markdown('<div style="font-size:0.72rem;color:#00A878;margin-top:4px;">◆ &nbsp;Auto-Distance Active</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="font-size:0.72rem;color:#8DB0C8;margin-top:4px;">◆ &nbsp;Auto-Distance Off</div>',
+                    unsafe_allow_html=True)
+
+    if _user:
+        st.markdown(
+            f'<div style="font-size:0.72rem;color:#00A878;margin-top:4px;">◆ &nbsp;'
+            f'Signed in as {_user.get("name","").split()[0]}</div>',
+            unsafe_allow_html=True
+        )
+        if st.button("Sign Out", key="signout_sidebar_btn", use_container_width=True):
+            _sign_out(auth_session.get_session_token())
+            st.rerun()
+
     st.markdown(f"""
     <div style="margin-top:32px;font-size:0.68rem;color:#4A6277;text-align:center;
                 border-top:1px solid rgba(0,174,239,0.2);padding-top:12px;">
@@ -363,9 +526,10 @@ with st.sidebar:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HEADER
-# CHANGE 1: no emoji, clean title "Calculate Carbon Emissions"
+# AUTH HEADER + MAIN HEADER
 # ─────────────────────────────────────────────────────────────────────────────
+render_auth_header()
+
 st.markdown("""
 <div class="atlas-header">
     <div>
@@ -383,36 +547,190 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 1 — CALCULATOR
-# CHANGE 2: st.container(border=True) instead of st.markdown('<div class="section-card">') 
-#           This removes the ghost/empty white boxes
-# CHANGE 3: Radio button replaces dual checkboxes for box type
-#           Only the active box type contributes to CO2 (matches Excel logic)
-# ═════════════════════════════════════════════════════════════════════════════
-if page == "Calculate Carbon Emissions":
+# ─────────────────────────────────────────────────────────────────────────────
+# DISTANCE WIDGET HELPER
+# ─────────────────────────────────────────────────────────────────────────────
+def distance_widget(section_key: str, transport_type: str, default_distance: float = 1000.0) -> float:
+    st.markdown('<div class="sub-section-title">Route</div>', unsafe_allow_html=True)
 
-    # ── Identity ──────────────────────────────────────────────────────────
-    with st.container(border=True):
-        st.markdown('<div class="section-title">Project Identity</div>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            pc_name = st.text_input("PC / Production Center", value="", placeholder="e.g. ABC-2024")
-        with c2:
-            product_name = st.text_input("Product Name", value="", placeholder="e.g. Compressor GA45")
-        with c3:
-            business_area = st.selectbox(
-                "Business Area",
-                ["CTBN (Compressor Technique Business Area)", "VTBN (Vacuum Technique Business Area)", "PTBA (Power Technique Business Area)", "ITBA (Industrial Technique Business Area)"],
-                index=0
+    default_origin = _pf(f"{section_key}_origin", "")
+    default_dest   = _pf(f"{section_key}_destination", "")
+
+    if ORS_API_KEY:
+        r1, r2 = st.columns(2)
+        with r1:
+            origin = st.text_input(
+                "Origin (city / address)",
+                value=default_origin,
+                placeholder="e.g. Pune, India",
+                key=f"origin_{section_key}",
+            )
+        with r2:
+            destination = st.text_input(
+                "Destination (city / address)",
+                value=default_dest,
+                placeholder="e.g. Frankfurt, Germany",
+                key=f"dest_{section_key}",
             )
 
-    # ── Two-column layout ─────────────────────────────────────────────────
+        auto_calc = st.button("Calculate Distance", key=f"calc_dist_{section_key}")
+
+        if auto_calc and origin and destination:
+            with st.spinner("Calculating route…"):
+                km, msg = get_distance(origin, destination, transport_type, ORS_API_KEY)
+            if km is not None:
+                st.session_state[f"auto_km_{section_key}"] = km
+                st.markdown(f'<div class="info-box">{msg}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="warn-box">{msg}</div>', unsafe_allow_html=True)
+        elif auto_calc:
+            st.markdown('<div class="warn-box">Please enter both origin and destination.</div>',
+                        unsafe_allow_html=True)
+
+        auto_km = st.session_state.get(f"auto_km_{section_key}", None)
+        if auto_km is None:
+            st.markdown(
+                '<div class="info-box">Enter origin and destination above, '
+                'then click <b>Calculate Distance</b> to auto-fill.</div>',
+                unsafe_allow_html=True
+            )
+            distance_km = 0.0
+        else:
+            distance_km = st.number_input(
+                "Distance (km) — edit to override",
+                min_value=0.0,
+                value=float(auto_km),
+                step=10.0,
+                format="%.0f",
+                key=f"dist_km_{section_key}",
+            )
+    else:
+        st.markdown(
+            '<div class="info-box">Automatic distance is off. '
+            'Add your free OpenRouteService API key in <code>config/settings.py</code>.</div>',
+            unsafe_allow_html=True
+        )
+        distance_km = st.number_input(
+            "Distance (km)",
+            min_value=0.0,
+            value=default_distance,
+            step=50.0,
+            format="%.0f",
+            key=f"dist_km_{section_key}",
+        )
+
+    return float(distance_km)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE ROUTING
+# ═════════════════════════════════════════════════════════════════════════════
+
+_oauth_callback_pending = bool(st.query_params.get("code")) and bool(st.query_params.get("state"))
+
+if _oauth_callback_pending or st.session_state.get("show_login_page"):
+    st.session_state["show_login_page"] = False
+    login_page.render()
+
+elif page == "Admin":
+    admin_page.render()
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 1 — CALCULATOR
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "Calculate Carbon Emissions":
+
+    if not auth_session.current_user() and not st.session_state.get("dismiss_signin_banner"):
+        banner_col, dismiss_col = st.columns([20, 1])
+        with banner_col:
+            st.markdown(
+                '<div class="info-box">You can explore the calculator without signing in, '
+                'but you\'ll need to <b>Sign In</b> (top right) to run a calculation and save results.</div>',
+                unsafe_allow_html=True,
+            )
+        with dismiss_col:
+            if st.button("✕", key="dismiss_signin_banner_btn", help="Dismiss"):
+                st.session_state["dismiss_signin_banner"] = True
+                st.rerun()
+
+    # Product Template Loader
+    products = pm.list_products()
+    with st.expander(
+        f"Load a saved product template ({len(products)} saved)" if products
+        else "Load a saved product template — none saved yet",
+        expanded=False,
+    ):
+        if products:
+            product_names = [p["name"] for p in products]
+            chosen = st.selectbox(
+                "Select product",
+                ["— select —"] + product_names,
+                key="product_chooser",
+            )
+            load_col, clear_col = st.columns([1, 1])
+            with load_col:
+                if st.button("Load Selected Product", key="load_product_btn"):
+                    if chosen != "— select —":
+                        data = pm.load_product(chosen)
+                        if data:
+                            _load_product_into_state(data)
+                            st.success(f"Loaded '{chosen}' — fields pre-filled below.")
+                            st.rerun()
+                        else:
+                            st.error("Product not found.")
+            with clear_col:
+                if st.button("Clear Pre-fill", key="clear_prefill_btn"):
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("pf_") or k == "product_loaded_name":
+                            del st.session_state[k]
+                    st.rerun()
+        else:
+            st.markdown(
+                '<div class="info-box">No products saved yet. '
+                'After calculating, use the <b>Save as Product Template</b> '
+                'option that appears below the results.</div>',
+                unsafe_allow_html=True,
+            )
+
+    if st.session_state.get("product_loaded_name"):
+        st.markdown(
+            f'<div class="product-loaded-banner">'
+            f'<span style="color:#00AEEF;font-size:1.1rem">◈</span>'
+            f'&nbsp; Product template loaded: '
+            f'<b>{st.session_state["product_loaded_name"]}</b>'
+            f'&nbsp;— modify any field and recalculate.</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Project Identity
+    with st.container(border=True):
+        st.markdown('<div class="section-title">Project Identity</div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            pc_name = st.text_input(
+                "PC / Project Code",
+                value=_pf("pc_name", ""),
+                placeholder="e.g. ABC-2024",
+            )
+        with c2:
+            product_name = st.text_input(
+                "Product Name",
+                value=_pf("product_name", ""),
+                placeholder="e.g. Compressor GA45",
+            )
+            if product_name.strip():
+                existing = [p["name"] for p in pm.list_products()]
+                matches  = [p for p in existing if product_name.strip().lower() in p.lower()]
+                if matches:
+                    st.markdown(
+                        f'<div class="warn-box">⚠ Template exists: <b>{matches[0]}</b>. '
+                        f'Use <b>Load Product</b> above to pre-fill all fields.</div>',
+                        unsafe_allow_html=True
+                    )
+
     left_col, right_col = st.columns([1, 1], gap="large")
 
-    # ══════════════════════════════════════════
-    # LEFT — DESIGN CALCULATION
-    # ══════════════════════════════════════════
+    # ── LEFT — DESIGN CALCULATION ──
     with left_col:
         with st.container(border=True):
             st.markdown(
@@ -423,105 +741,122 @@ if page == "Calculate Carbon Emissions":
                 unsafe_allow_html=True
             )
 
-            # Product Dimensions
             st.markdown('<div class="sub-section-title">Product Size (mm)</div>', unsafe_allow_html=True)
             d1, d2, d3 = st.columns(3)
             with d1:
-                length_mm = st.number_input("Length", min_value=0.0, value=600.0, step=10.0, format="%.1f")
+                length_mm = st.number_input("Length", min_value=0.0,
+                    value=_pf("length_mm", 600.0), step=10.0, format="%.1f")
             with d2:
-                width_mm  = st.number_input("Width",  min_value=0.0, value=400.0, step=10.0, format="%.1f")
+                width_mm = st.number_input("Width", min_value=0.0,
+                    value=_pf("width_mm", 400.0), step=10.0, format="%.1f")
             with d3:
-                height_mm = st.number_input("Height", min_value=0.0, value=300.0, step=10.0, format="%.1f")
+                height_mm = st.number_input("Height", min_value=0.0,
+                    value=_pf("height_mm", 300.0), step=10.0, format="%.1f")
 
             st.markdown(
                 f'<div class="info-box">+{BOX_CLEARANCE} mm clearance added automatically '
-                f'to each dimension so the box fits safely around the product. (Excel: E12+40)</div>',
+                f'to each dimension so the box fits safely around the product.</div>',
                 unsafe_allow_html=True
             )
 
             st.markdown("---")
 
-            # ── CHANGE 3: Radio replaces dual checkboxes ──────────────────
-            # Excel has M12 (corrugated) and M13 (wooden) as separate checkboxes
-            # but only ONE should drive the CO2 calculation at a time.
-            # A radio button correctly enforces this mutual exclusivity.
             st.markdown('<div class="sub-section-title">Box Type</div>', unsafe_allow_html=True)
             st.markdown(
                 '<div class="info-box">Select ONE box type — corrugated and wooden box '
                 'are alternatives. The chosen box sits on top of the pallet.</div>',
                 unsafe_allow_html=True
             )
+            _box_default = _pf("box_choice", "Corrugated Box")
+            _box_idx     = 0 if _box_default == "Corrugated Box" else 1
             box_choice = st.radio(
                 "Box Type",
                 ["Corrugated Box", "Wooden Box"],
-                index=0,
+                index=_box_idx,
                 horizontal=True,
                 label_visibility="collapsed",
-                key="box_choice"
+                key="box_choice",
             )
             use_corrugated = (box_choice == "Corrugated Box")
             use_wooden     = (box_choice == "Wooden Box")
 
-            # Corrugated Box fields — Excel B15/B16 (ply)
-            # Only shown when Corrugated Box is selected
+            _ply_default   = _pf("ply", 5)
+            _fefco_opts    = ["FEFCO 201", "FEFCO 200", "FEFCO 310"]
+            _fefco_default = _pf("fefco_type", _fefco_opts[0])
             if use_corrugated:
-                ply = st.selectbox("Box Ply", [3, 5, 7], index=1)
+                st.markdown('<div class="sub-section-title">Corrugated Box Properties</div>',
+                            unsafe_allow_html=True)
+                fefco_type = st.selectbox(
+                    "Box Type", _fefco_opts,
+                    index=_fefco_opts.index(_fefco_default) if _fefco_default in _fefco_opts else 0,
+                    key="fefco_type",
+                )
+                ply = st.selectbox(
+                    "Box Ply", [3, 5, 7],
+                    index=[3, 5, 7].index(_ply_default) if _ply_default in [3, 5, 7] else 1
+                )
             else:
-                ply = 5  # not used for wooden box
+                fefco_type = _fefco_default
+                ply = 5
 
-            # Excel B18/B19 — Box Thickness and Wood Type
-            # These are ALWAYS shown regardless of box type (separate rows in Excel)
-            # Thickness feeds into wooden box volume formula M19
-            # Wood Type feeds into CO2 emission factor lookup
             if use_wooden:
                 st.markdown('<div class="sub-section-title">Wooden Box Properties</div>',
-                        unsafe_allow_html=True)
+                            unsafe_allow_html=True)
                 bw1, bw2 = st.columns(2)
                 with bw1:
                     thickness_mm = st.number_input(
-                        "Box Thickness (mm)", 
-                        min_value=1.0, value=20.0, step=1.0, format="%.0f"
-                        )
-                    with bw2:
-                        wood_type_box = st.selectbox(
-                            "Wood Type (Box)", ["Solidwood", "Plywood"], key="wt_box"
-                            )
+                        "Box Thickness (mm)",
+                        min_value=1.0, value=_pf("thickness_mm", 20.0), step=1.0, format="%.0f"
+                    )
+                with bw2:
+                    _wt_opts    = ["Solidwood", "Plywood"]
+                    _wt_default = _pf("wood_type_box", "Solidwood")
+                    wood_type_box = st.selectbox(
+                        "Wood Type (Box)", _wt_opts,
+                        index=_wt_opts.index(_wt_default) if _wt_default in _wt_opts else 0,
+                        key="wt_box",
+                    )
             else:
-                thickness_mm=20.0
-                wood_type_box="Solidwood"
-        
+                thickness_mm  = _pf("thickness_mm", 20.0)
+                wood_type_box = _pf("wood_type_box", "Solidwood")
 
             st.markdown("---")
 
-            # Wooden Pallet
             st.markdown('<div class="sub-section-title">Wooden Pallet</div>', unsafe_allow_html=True)
             st.markdown(
                 '<div class="info-box">Pallet dimensions auto-calculated from product size. '
                 'Fixed: Deck H=36mm · Runner 125×110×90mm (×9) · Planks W×90×20mm (×3)</div>',
                 unsafe_allow_html=True
             )
-            wood_type_pallet = st.selectbox("Wood Type (Pallet)", ["Plywood", "Solidwood"], key="wt_pallet")
+            _wtp_opts    = ["Plywood", "Solidwood"]
+            _wtp_default = _pf("wood_type_pallet", "Plywood")
+            wood_type_pallet = st.selectbox(
+                "Wood Type (Pallet)", _wtp_opts,
+                index=_wtp_opts.index(_wtp_default) if _wtp_default in _wtp_opts else 0,
+                key="wt_pallet",
+            )
 
             st.markdown("---")
 
-            # Transportation — Design
             st.markdown('<div class="sub-section-title">Transportation</div>', unsafe_allow_html=True)
+            _td_opts    = list(TRANSPORT_FACTORS.keys())
+            _td_default = _pf("transport_design", _td_opts[0])
             transport_design = st.selectbox(
-                "Transport Type", list(TRANSPORT_FACTORS.keys()), index=0, key="trans_design"
+                "Transport Type", _td_opts,
+                index=_td_opts.index(_td_default) if _td_default in _td_opts else 0,
+                key="trans_design",
             )
-            t1, t2 = st.columns(2)
-            with t1:
-                product_weight_kg = st.number_input(
-                    "Product Weight (kg)", min_value=0.0, value=10.0, step=0.5, format="%.1f"
-                )
-            with t2:
-                distance_design_km = st.number_input(
-                    "Distance (km)", min_value=0.0, value=1000.0, step=50.0, format="%.0f"
-                )
+            product_weight_kg = st.number_input(
+                "Product Weight (kg)", min_value=0.0,
+                value=_pf("product_weight_kg", 10.0), step=0.5, format="%.1f"
+            )
+            distance_design_km = distance_widget(
+                section_key="design",
+                transport_type=transport_design,
+                default_distance=_pf("distance_design_km", 1000.0),
+            )
 
-    # ══════════════════════════════════════════
-    # RIGHT — PHYSICAL INPUT
-    # ══════════════════════════════════════════
+    # ── RIGHT — PHYSICAL INPUT ──
     with right_col:
         with st.container(border=True):
             st.markdown(
@@ -532,32 +867,38 @@ if page == "Calculate Carbon Emissions":
                 unsafe_allow_html=True
             )
 
-            # Material Weights (Excel U12, U13, U14, U15)
             st.markdown('<div class="sub-section-title">Material Weights (kg)</div>', unsafe_allow_html=True)
             p1, p2 = st.columns(2)
             with p1:
                 phys_corrugated_kg = st.number_input(
-                    "Corrugated Box (kg)", min_value=0.0, value=0.0,
+                    "Corrugated Box (kg)", min_value=0.0,
+                    value=_pf("phys_corrugated_kg", 0.0),
                     step=0.1, key="phys_corr", format="%.3f"
                 )
                 phys_wooden_kg = st.number_input(
-                    "Wooden Box (kg)", min_value=0.0, value=0.0,
+                    "Wooden Box (kg)", min_value=0.0,
+                    value=_pf("phys_wooden_kg", 0.0),
                     step=0.1, key="phys_wood", format="%.3f"
                 )
             with p2:
                 phys_pallet_kg = st.number_input(
-                    "Wooden Pallet (kg)", min_value=0.0, value=0.0,
+                    "Wooden Pallet (kg)", min_value=0.0,
+                    value=_pf("phys_pallet_kg", 0.0),
                     step=0.1, key="phys_pallet", format="%.3f"
                 )
                 phys_plastic_kg = st.number_input(
-                    "Plastic Material (kg)", min_value=0.0, value=0.0,
+                    "Plastic Material (kg)", min_value=0.0,
+                    value=_pf("phys_plastic_kg", 0.0),
                     step=0.1, key="phys_plastic", format="%.3f"
                 )
 
-            # Plastic Type (Excel T25)
             st.markdown('<div class="sub-section-title">Plastic Type</div>', unsafe_allow_html=True)
+            _pt_opts    = list(PLASTIC_EMISSION_FACTORS.keys())
+            _pt_default = _pf("phys_plastic_type", "LDPE")
             phys_plastic_type = st.selectbox(
-                "Plastic Type", list(PLASTIC_EMISSION_FACTORS.keys()), key="phys_ptype"
+                "Plastic Type", _pt_opts,
+                index=_pt_opts.index(_pt_default) if _pt_default in _pt_opts else 0,
+                key="phys_ptype",
             )
             plastic_info = {
                 "LDPE":  "Low Density Polyethylene — shrink wrap, bags · 2.792 kgCO₂/kg",
@@ -570,20 +911,24 @@ if page == "Calculate Carbon Emissions":
                 f'<div class="info-box">{plastic_info.get(phys_plastic_type, "")}</div>',
                 unsafe_allow_html=True
             )
-            # Wood Type — Physical Input (Excel: Packaging Material > Wood > Wood Type dropdown)
-            st.markdown('<div class="sub-section-title">Wood Type (Physical)</div>', unsafe_allow_html=True)
+
+            st.markdown('<div class="sub-section-title">Wood Type (Physical)</div>',
+                        unsafe_allow_html=True)
+            _pwt_opts    = ["Solidwood", "Plywood"]
+            _pwt_default = _pf("phys_wood_type", "Solidwood")
             phys_wood_type = st.selectbox(
-                "Wood Type (Physical)", ["Solidwood", "Plywood"], key="phys_wt"
-                )
+                "Wood Type (Physical)", _pwt_opts,
+                index=_pwt_opts.index(_pwt_default) if _pwt_default in _pwt_opts else 0,
+                key="phys_wt",
+            )
             st.markdown(
-                '<div class="info-box">Select the wood type for your physical wooden box and pallet. '
-                'Used to determine CO₂ emission factor: Solidwood = 0.31 kgCO₂/kg · Plywood = 0.68 kgCO₂/kg</div>',
-                unsafe_allow_html=True
-                )
+                '<div class="info-box">Wood type for your physical wooden box and pallet. '
+                'Solidwood = 0.31 kgCO₂/kg · Plywood = 0.68 kgCO₂/kg</div>',
+                unsafe_allow_html=True,
+            )
 
             st.markdown("---")
 
-            # Packaging Combination (Excel S18/S19)
             st.markdown('<div class="sub-section-title">Packaging Combination (for Transport)</div>',
                         unsafe_allow_html=True)
             st.markdown(
@@ -591,9 +936,12 @@ if page == "Calculate Carbon Emissions":
                 'Sets the combined weight for transport CO₂. (Excel S18/S19)</div>',
                 unsafe_allow_html=True
             )
+            _combo_default = _pf("phys_pkg_combo", "corrugated+pallet")
+            _combo_idx     = 0 if _combo_default == "corrugated+pallet" else 1
             phys_pkg_combo = st.radio(
                 "Packaging combination",
                 ["corrugated+pallet", "wooden+pallet"],
+                index=_combo_idx,
                 format_func=lambda x: "Corrugated Box + Pallet" if x == "corrugated+pallet"
                                       else "Wooden Box + Pallet",
                 key="phys_combo",
@@ -602,38 +950,77 @@ if page == "Calculate Carbon Emissions":
 
             st.markdown("---")
 
-            # Transportation — Physical (Excel P34, T34, W34)
             st.markdown('<div class="sub-section-title">Transportation</div>', unsafe_allow_html=True)
+            _tp_opts    = list(TRANSPORT_FACTORS.keys())
+            _tp_default = _pf("transport_physical", _tp_opts[0])
             transport_physical = st.selectbox(
-                "Transport Type", list(TRANSPORT_FACTORS.keys()), index=0, key="trans_phys"
+                "Transport Type", _tp_opts,
+                index=_tp_opts.index(_tp_default) if _tp_default in _tp_opts else 0,
+                key="trans_phys",
             )
-            p3, p4 = st.columns(2)
-            with p3:
-                phys_product_weight_kg = st.number_input(
-                    "Product Weight (kg)", min_value=0.0, value=0.0,
-                    step=0.5, key="phys_prod_wt", format="%.1f"
-                )
-            with p4:
-                distance_physical_km = st.number_input(
-                    "Distance (km)", min_value=0.0, value=1000.0,
-                    step=50.0, key="dist_phys", format="%.0f"
-                )
+            phys_product_weight_kg = st.number_input(
+                "Product Weight (kg)", min_value=0.0,
+                value=_pf("phys_product_weight_kg", 0.0),
+                step=0.5, key="phys_prod_wt", format="%.1f"
+            )
+            distance_physical_km = distance_widget(
+                section_key="physical",
+                transport_type=transport_physical,
+                default_distance=_pf("distance_physical_km", 1000.0),
+            )
 
-    # ── Notes ─────────────────────────────────────────────────────────────
+    # Pre-calculate for auto note
+    results = calculate_all(
+        length_mm=length_mm, width_mm=width_mm, height_mm=height_mm,
+        ply=ply, box_thickness_mm=thickness_mm,
+        wood_type_box=wood_type_box, wood_type_pallet=wood_type_pallet,
+        use_corrugated=use_corrugated, use_wooden=use_wooden,
+        transport_type_design=transport_design,
+        product_weight_kg=product_weight_kg,
+        distance_design_km=distance_design_km,
+        phys_corrugated_kg=phys_corrugated_kg,
+        phys_wooden_kg=phys_wooden_kg,
+        phys_pallet_kg=phys_pallet_kg,
+        phys_plastic_kg=phys_plastic_kg,
+        phys_plastic_type=phys_plastic_type,
+        phys_wood_type_box=phys_wood_type,
+        phys_packaging_combo=phys_pkg_combo,
+        transport_type_physical=transport_physical,
+        phys_product_weight_kg=phys_product_weight_kg,
+        distance_physical_km=distance_physical_km,
+    )
+
+    auto_note = (
+        f"Shipment of {product_name or 'product'} ({pc_name or 'N/A'}) "
+        f"from {st.session_state.get('origin_design', '—')} "
+        f"to {st.session_state.get('dest_design', '—')}. "
+        f"Packaging: {box_choice}, {transport_design} transport over "
+        f"{distance_design_km:.0f} km. "
+        f"Total CO₂: {results['co2_total_design']:.4f} kg (Design), "
+        f"{results['co2_total_phys']:.4f} kg (Physical)."
+    )
+
     with st.container(border=True):
         st.markdown('<div class="section-title">Notes / Description</div>', unsafe_allow_html=True)
         note = st.text_area(
             "Add a note for this calculation",
-            placeholder="e.g. Shipment from Pune to Frankfurt, Q1 2025...",
-            height=80, label_visibility="collapsed"
+            value=auto_note,
+            height=80,
+            label_visibility="collapsed"
         )
 
-    # ── Calculate button ───────────────────────────────────────────────────
     _, btn_col, _ = st.columns([2, 1, 2])
     with btn_col:
         calc_clicked = st.button("CALCULATE", use_container_width=True)
 
-    # ── Results ────────────────────────────────────────────────────────────
+    if calc_clicked and not auth_session.current_user():
+        st.error("Please sign in with Google to run and save a calculation.")
+        if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_ID != "your_client_id_here":
+            _, gate_col, _ = st.columns([2, 1, 2])
+            with gate_col:
+                render_signin_link(GOOGLE_CLIENT_ID, GOOGLE_REDIRECT_URI, label="Sign in with Google")
+        calc_clicked = False
+
     if calc_clicked:
         results = calculate_all(
             length_mm=length_mm, width_mm=width_mm, height_mm=height_mm,
@@ -648,13 +1035,36 @@ if page == "Calculate Carbon Emissions":
             phys_pallet_kg=phys_pallet_kg,
             phys_plastic_kg=phys_plastic_kg,
             phys_plastic_type=phys_plastic_type,
-            phys_wood_type_box=phys_wood_type, 
+            phys_wood_type_box=phys_wood_type,
             phys_packaging_combo=phys_pkg_combo,
             transport_type_physical=transport_physical,
             phys_product_weight_kg=phys_product_weight_kg,
             distance_physical_km=distance_physical_km,
-            
         )
+
+        st.session_state["last_inputs"] = {
+            "pc_name": pc_name, "product_name": product_name,
+            "length_mm": length_mm, "width_mm": width_mm, "height_mm": height_mm,
+            "box_choice": box_choice, "fefco_type": fefco_type, "ply": ply, "thickness_mm": thickness_mm,
+            "wood_type_box": wood_type_box, "wood_type_pallet": wood_type_pallet,
+            "transport_design": transport_design,
+            "product_weight_kg": product_weight_kg,
+            "distance_design_km": distance_design_km,
+            "phys_corrugated_kg": phys_corrugated_kg,
+            "phys_wooden_kg": phys_wooden_kg,
+            "phys_pallet_kg": phys_pallet_kg,
+            "phys_plastic_kg": phys_plastic_kg,
+            "phys_plastic_type": phys_plastic_type,
+            "phys_wood_type": phys_wood_type,
+            "phys_pkg_combo": phys_pkg_combo,
+            "transport_physical": transport_physical,
+            "phys_product_weight_kg": phys_product_weight_kg,
+            "distance_physical_km": distance_physical_km,
+            "design_origin":        st.session_state.get("origin_design", ""),
+            "design_destination":   st.session_state.get("dest_design", ""),
+            "physical_origin":      st.session_state.get("origin_physical", ""),
+            "physical_destination": st.session_state.get("dest_physical", ""),
+        }
 
         st.markdown("---")
         st.markdown(
@@ -666,7 +1076,6 @@ if page == "Calculate Carbon Emissions":
 
         res_left, res_right = st.columns(2, gap="large")
 
-        # Design outputs
         with res_left:
             st.markdown('<div class="section-title">Design Calculation — Outputs</div>',
                         unsafe_allow_html=True)
@@ -721,7 +1130,6 @@ if page == "Calculate Carbon Emissions":
                 <div class="co2-unit">kg CO₂ equivalent</div>
             </div>""", unsafe_allow_html=True)
 
-        # Physical outputs
         with res_right:
             st.markdown('<div class="section-title">Physical Input — Outputs</div>',
                         unsafe_allow_html=True)
@@ -763,7 +1171,6 @@ if page == "Calculate Carbon Emissions":
                 <div class="co2-unit">kg CO₂ equivalent</div>
             </div>""", unsafe_allow_html=True)
 
-        # Sustainability comparison
         st.markdown("---")
         d_total = results["co2_total_design"]
         p_total = results["co2_total_phys"]
@@ -794,12 +1201,11 @@ if page == "Calculate Carbon Emissions":
                 </div>
             </div>""", unsafe_allow_html=True)
 
-        # Save to DB
+        # Save calculation to DB
         inputs_to_save = {
             "pc_name": pc_name, "product_name": product_name,
-            "business_area": business_area,
             "length_mm": length_mm, "width_mm": width_mm, "height_mm": height_mm,
-            "box_choice": box_choice, "ply": ply, "thickness_mm": thickness_mm,
+            "box_choice": box_choice, "fefco_type": fefco_type, "ply": ply, "thickness_mm": thickness_mm,
             "wood_type_box": wood_type_box, "wood_type_pallet": wood_type_pallet,
             "transport_design": transport_design,
             "product_weight_kg": product_weight_kg,
@@ -809,6 +1215,7 @@ if page == "Calculate Carbon Emissions":
             "phys_pallet_kg": phys_pallet_kg,
             "phys_plastic_kg": phys_plastic_kg,
             "phys_plastic_type": phys_plastic_type,
+            "phys_wood_type": phys_wood_type,
             "phys_pkg_combo": phys_pkg_combo,
             "transport_physical": transport_physical,
             "phys_product_weight_kg": phys_product_weight_kg,
@@ -817,10 +1224,49 @@ if page == "Calculate Carbon Emissions":
         outputs_to_save = {k: round(v, 6) if isinstance(v, float) else v
                            for k, v in results.items()}
         try:
-            row_id = db.save_calculation(inputs_to_save, outputs_to_save, note)
+            current_user = auth_session.current_user()
+            row_id = db.save_calculation(
+                inputs_to_save, outputs_to_save, note,
+                user_id=current_user["id"] if current_user else None
+            )
             st.success(f"Calculation saved — Record ID #{row_id}")
         except Exception as e:
             st.error(f"Could not save: {e}")
+
+    # Save Template — outside if calc_clicked so it persists
+    if "last_inputs" in st.session_state:
+        st.markdown("---")
+        with st.container(border=True):
+            st.markdown('<div class="section-title">Save as Product Template</div>',
+                        unsafe_allow_html=True)
+            st.markdown(
+                '<div class="info-box">Save all current inputs as a reusable template. '
+                'Saving with the same name updates the existing one.</div>',
+                unsafe_allow_html=True,
+            )
+            tpl_name_default = (
+                st.session_state["last_inputs"].get("product_name", "").strip()
+                or st.session_state["last_inputs"].get("pc_name", "").strip()
+                or "My Product"
+            )
+            sv1, sv2 = st.columns([2, 1])
+            with sv1:
+                tpl_name = st.text_input(
+                    "Template name",
+                    value=tpl_name_default,
+                    placeholder="e.g. Compressor GA45",
+                    key="save_tpl_name",
+                )
+            with sv2:
+                st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
+                save_tpl = st.button("Save Template", key="save_tpl_btn")
+
+            if save_tpl:
+                ok_save, save_msg = pm.save_product(tpl_name, st.session_state["last_inputs"])
+                if ok_save:
+                    st.toast(f"✓ {save_msg}", icon="✅")
+                else:
+                    st.toast(f"✗ {save_msg}", icon="❌")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -834,9 +1280,25 @@ elif page == "My Calculations":
         unsafe_allow_html=True
     )
 
-    records = db.get_all_calculations()
+    current_user = auth_session.current_user()
 
-    if not records:
+    if not current_user:
+        st.markdown(
+            '<div class="info-box">Please <b>Sign In</b> (top right) to view your saved calculations.</div>',
+            unsafe_allow_html=True,
+        )
+        if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_ID != "your_client_id_here":
+            _, gate_col, _ = st.columns([2, 1, 2])
+            with gate_col:
+                render_signin_link(GOOGLE_CLIENT_ID, GOOGLE_REDIRECT_URI, label="Sign in with Google")
+        records = None
+
+    else:
+        records = db.get_all_calculations(user_id=current_user["id"])
+
+    if records is None:
+        pass
+    elif not records:
         st.markdown("""<div class="info-box" style="text-align:center;padding:32px;">
             <div style="font-size:1.2rem;font-weight:700;color:#003057;margin-bottom:6px;">
                 No records yet
@@ -846,30 +1308,34 @@ elif page == "My Calculations":
             </div>
         </div>""", unsafe_allow_html=True)
     else:
-        # ── Build full table first ────────────────────────────────────────
+        st.markdown(
+            f'<div style="color:#8D9BAD;font-size:0.82rem;margin-bottom:10px;">'
+            f'{len(records)} record(s) found</div>',
+            unsafe_allow_html=True
+        )
+
         table_rows = []
         for r in records:
-            inp = r.get("inputs", {}); out = r.get("outputs", {}); ts = str(r.get("timestamp", ""))
+            inp = r.get("inputs", {})
+            out = r.get("outputs", {})
+            ts  = str(r.get("timestamp", ""))
             try:
-                dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-                date_str = dt.strftime("%d %b %Y"); time_str = dt.strftime("%H:%M")
-                month_num = dt.month; year_num = dt.year
+                dt       = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                date_str = dt.strftime("%d %b %Y")
+                time_str = dt.strftime("%H:%M")
             except Exception:
-                date_str = ts[:10]; time_str = ts[11:16]
-                month_num = 0; year_num = 0
+                date_str = ts[:10]
+                time_str = ts[11:16]
             table_rows.append({
-                "ID":             r.get("id"),
-                "Date":           date_str,
-                "Time":           time_str,
-                "_month":         month_num,
-                "_year":          year_num,
-                "Project":        inp.get("pc_name", "—"),
-                "Product":        inp.get("product_name", "—"),
-                "Business Area":  inp.get("business_area", "—"),
-                "L×W×H (mm)":    (f"{inp.get('length_mm',0):.0f}×"
-                                   f"{inp.get('width_mm',0):.0f}×"
-                                   f"{inp.get('height_mm',0):.0f}"),
-                "Box":            inp.get("box_choice", "—"),
+                "ID":           r.get("id"),
+                "Date":         date_str,
+                "Time":         time_str,
+                "Project":      inp.get("pc_name", "—"),
+                "Product":      inp.get("product_name", "—"),
+                "L×W×H (mm)":  (f"{inp.get('length_mm',0):.0f}×"
+                                 f"{inp.get('width_mm',0):.0f}×"
+                                 f"{inp.get('height_mm',0):.0f}"),
+                "Box":          inp.get("box_choice", "—"),
                 "Corr Wt (kg)":   round(out.get("corr_weight_kg", 0), 3),
                 "Wood Wt (kg)":   round(out.get("wood_weight_kg", 0), 3),
                 "Pallet Wt (kg)": round(out.get("pallet_wt_kg", 0), 3),
@@ -879,69 +1345,8 @@ elif page == "My Calculations":
                 "Notes":          r.get("description", ""),
             })
 
-        df_full = pd.DataFrame(table_rows)
-
-        # ── FILTERS ──────────────────────────────────────────────────────
-        with st.container(border=True):
-            st.markdown('<div class="section-title">Filters</div>', unsafe_allow_html=True)
-            f1, f2, f3, f4 = st.columns(4)
-
-            with f1:
-                all_business_areas = sorted(
-                    [x for x in df_full["Business Area"].unique() if x and x != "—"]
-                )
-                ba_options = ["All"] + all_business_areas
-                filter_ba = st.selectbox("Business Area", ba_options, key="filter_ba")
-
-            with f2:
-                all_materials = sorted(
-                    [x for x in df_full["Box"].unique() if x and x != "—"]
-                )
-                mat_options = ["All"] + all_materials
-                filter_mat = st.selectbox("Box / Material", mat_options, key="filter_mat")
-
-            with f3:
-                month_names = {
-                    0: "All", 1: "January", 2: "February", 3: "March",
-                    4: "April", 5: "May", 6: "June", 7: "July",
-                    8: "August", 9: "September", 10: "October",
-                    11: "November", 12: "December"
-                }
-                all_months = sorted(df_full["_month"].unique())
-                month_options = [0] + [m for m in all_months if m != 0]
-                filter_month = st.selectbox(
-                    "Month",
-                    month_options,
-                    format_func=lambda m: month_names.get(m, str(m)),
-                    key="filter_month"
-                )
-
-            with f4:
-                all_years = sorted(df_full["_year"].unique(), reverse=True)
-                year_options = ["All"] + [str(y) for y in all_years if y != 0]
-                filter_year = st.selectbox("Year", year_options, key="filter_year")
-
-        # ── Apply filters ─────────────────────────────────────────────────
-        df_filtered = df_full.copy()
-        if filter_ba != "All":
-            df_filtered = df_filtered[df_filtered["Business Area"] == filter_ba]
-        if filter_mat != "All":
-            df_filtered = df_filtered[df_filtered["Box"] == filter_mat]
-        if filter_month != 0:
-            df_filtered = df_filtered[df_filtered["_month"] == filter_month]
-        if filter_year != "All":
-            df_filtered = df_filtered[df_filtered["_year"] == int(filter_year)]
-
-        # Drop internal helper columns before display
-        df_display = df_filtered.drop(columns=["_month", "_year"])
-
-        st.markdown(
-            f'<div style="color:#8D9BAD;font-size:0.82rem;margin-bottom:10px;">'
-            f'{len(df_display)} record(s) shown (of {len(df_full)} total)</div>',
-            unsafe_allow_html=True
-        )
-
-        st.dataframe(df_display, use_container_width=True, hide_index=True,
+        df = pd.DataFrame(table_rows)
+        st.dataframe(df, use_container_width=True, hide_index=True,
                      column_config={
                          "CO₂ Design":   st.column_config.NumberColumn("CO₂ Design (kg)",   format="%.4f"),
                          "CO₂ Physical": st.column_config.NumberColumn("CO₂ Physical (kg)", format="%.4f"),
@@ -963,14 +1368,130 @@ elif page == "My Calculations":
                 with st.expander(f"Full Detail — Record #{sel_id}", expanded=False):
                     ic, oc = st.columns(2)
                     with ic:
-                        st.markdown("**Inputs**"); st.json(sel_rec.get("inputs", {}))
+                        st.markdown("**Inputs**")
+                        st.json(sel_rec.get("inputs", {}))
                     with oc:
-                        st.markdown("**Outputs**"); st.json(sel_rec.get("outputs", {}))
+                        st.markdown("**Outputs**")
+                        st.json(sel_rec.get("outputs", {}))
                     if sel_rec.get("description"):
                         st.markdown(f"**Notes:** {sel_rec['description']}")
 
+        if len(records) >= 25:
+            st.markdown("---")
+            with st.expander("📊 Statistics", expanded=False):
+                co2_vals = [r.get("outputs", {}).get("co2_total_design", 0) for r in records]
+                st.markdown(
+                    f'<div style="color:#8D9BAD;font-size:0.82rem;margin-bottom:10px;">'
+                    f'Based on Design Calculation CO₂ across {len(records)} saved calculation(s)</div>',
+                    unsafe_allow_html=True
+                )
+                s1, s2, s3, s4 = st.columns(4)
+                with s1:
+                    st.markdown(f"""<div class="metric-card">
+                        <div class="m-label">Total Calculations</div>
+                        <div class="m-value">{len(co2_vals)}</div></div>""", unsafe_allow_html=True)
+                with s2:
+                    st.markdown(f"""<div class="metric-card">
+                        <div class="m-label">Average CO₂</div>
+                        <div class="m-value">{sum(co2_vals) / len(co2_vals):.4f}</div>
+                        <div class="m-unit">kg CO₂</div></div>""", unsafe_allow_html=True)
+                with s3:
+                    st.markdown(f"""<div class="metric-card">
+                        <div class="m-label">Lowest CO₂</div>
+                        <div class="m-value">{min(co2_vals):.4f}</div>
+                        <div class="m-unit">kg CO₂</div></div>""", unsafe_allow_html=True)
+                with s4:
+                    st.markdown(f"""<div class="metric-card">
+                        <div class="m-label">Highest CO₂</div>
+                        <div class="m-value">{max(co2_vals):.4f}</div>
+                        <div class="m-unit">kg CO₂</div></div>""", unsafe_allow_html=True)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-# PAGE 3 — SETTINGS
+# PAGE 3 — PRODUCT CATALOG
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "Product Catalog":
+    st.markdown(
+        '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:1.2rem;'
+        'font-weight:700;color:#003057;text-transform:uppercase;letter-spacing:1.5px;'
+        'margin-bottom:14px;">Product Catalog — Saved Templates</div>',
+        unsafe_allow_html=True
+    )
+
+    products = pm.list_products()
+
+    if not products:
+        st.markdown("""<div class="info-box" style="text-align:center;padding:32px;">
+            <div style="font-size:1.2rem;font-weight:700;color:#003057;margin-bottom:6px;">
+                No product templates yet
+            </div>
+            <div style="color:#8D9BAD;font-size:0.85rem;">
+                Run a calculation and use <b>Save as Product Template</b> to add products here.
+            </div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(
+            f'<div style="color:#8D9BAD;font-size:0.82rem;margin-bottom:10px;">'
+            f'{len(products)} product(s) saved</div>',
+            unsafe_allow_html=True
+        )
+        df_prod = pd.DataFrame([{
+            "Name":         p["name"],
+            "PC / Code":    p["pc_name"] or "—",
+            "Last Updated": p["updated_at"],
+        } for p in products])
+        st.dataframe(df_prod, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        if not auth_session.is_admin():
+            st.markdown(
+                '<div class="info-box">Inspecting, deleting, and renaming templates is '
+                'restricted to admins.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            with st.container(border=True):
+                st.markdown('<div class="section-title">Inspect / Delete</div>', unsafe_allow_html=True)
+                prod_names = [p["name"] for p in products]
+                sel_prod   = st.selectbox("Select product", prod_names, key="cat_sel")
+
+                ia, da = st.columns(2)
+                with ia:
+                    if st.button("Inspect Selected", key="inspect_prod"):
+                        data = pm.load_product(sel_prod)
+                        if data:
+                            with st.expander(f"Fields — {sel_prod}", expanded=True):
+                                st.json(data)
+                with da:
+                    if st.button("Delete Selected", key="del_prod"):
+                        ok_del, del_msg = pm.delete_product(sel_prod)
+                        if ok_del:
+                            st.success(del_msg)
+                            st.rerun()
+                        else:
+                            st.error(del_msg)
+
+            with st.container(border=True):
+                st.markdown('<div class="section-title">Rename Product</div>', unsafe_allow_html=True)
+                rn1, rn2, rn3 = st.columns([2, 2, 1])
+                with rn1:
+                    rn_old = st.selectbox("Product to rename", prod_names, key="rn_old")
+                with rn2:
+                    rn_new = st.text_input("New name", placeholder="New template name", key="rn_new")
+                with rn3:
+                    st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
+                    if st.button("Rename", key="rn_btn"):
+                        ok_rn, rn_msg = pm.rename_product(rn_old, rn_new)
+                        if ok_rn:
+                            st.success(rn_msg)
+                            st.rerun()
+                        else:
+                            st.error(rn_msg)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 4 — SETTINGS
 # ═════════════════════════════════════════════════════════════════════════════
 elif page == "Settings":
     st.markdown(
@@ -989,10 +1510,34 @@ elif page == "Settings":
             st.warning(f"Not connected — {msg}")
         st.markdown(
             '<div class="info-box">To use MySQL, set <b>use_mysql: True</b> in '
-            '<code>config/settings.py</code> with your credentials. '
-            'By default SQLite is used — no setup needed.</div>',
+            '<code>config/settings.py</code> with your credentials.</div>',
             unsafe_allow_html=True
         )
+
+    with st.container(border=True):
+        st.markdown('<div class="section-title">Automatic Distance — OpenRouteService</div>',
+                    unsafe_allow_html=True)
+        if ORS_API_KEY:
+            st.success("API key configured — automatic distance calculation is active.")
+        else:
+            st.warning("No API key set — distance must be entered manually.")
+        st.markdown("""
+        <div class="info-box">
+        <b>How to get a free OpenRouteService API key:</b><br>
+        1. Go to <a href="https://openrouteservice.org/dev/#/signup" target="_blank">openrouteservice.org/dev/#/signup</a><br>
+        2. Register with an email address (free, no credit card)<br>
+        3. Dashboard → Tokens → <b>CREATE TOKEN</b> → copy the key<br>
+        4. Paste into <code>config/settings.py</code>: <code>ORS_API_KEY = "your_key"</code><br>
+        Free tier: <b>2,000 requests/day</b>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with st.container(border=True):
+        st.markdown('<div class="section-title">Google OAuth</div>', unsafe_allow_html=True)
+        if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_ID != "your_client_id_here":
+            st.success("Google OAuth configured — login is active.")
+        else:
+            st.warning("Google OAuth not configured — add credentials to config/settings.py.")
 
     with st.container(border=True):
         st.markdown('<div class="section-title">Emission Factors Reference</div>', unsafe_allow_html=True)
@@ -1015,12 +1560,6 @@ elif page == "Settings":
                 "Mode":       list(TRANSPORT_FACTORS.keys()),
                 "kgCO₂/t·km": [round(v, 4) for v in TRANSPORT_FACTORS.values()]
             }), hide_index=True)
-        st.markdown(
-            '<div class="info-box" style="margin-top:10px;">Sources: FEFCO (Corrugated) · '
-            'Climatiq (Wood/Plastic) · McKinnon Report (Transport) — '
-            'same as Excel Backup calculations sheet.</div>',
-            unsafe_allow_html=True
-        )
 
     with st.container(border=True):
         st.markdown('<div class="section-title">Excel Cell Mapping</div>', unsafe_allow_html=True)

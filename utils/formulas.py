@@ -74,10 +74,10 @@ PLASTIC_EMISSION_FACTORS = {
 
 # Transport emission factors (kgCO2/tonne-km) — Backup!H15:H18
 TRANSPORT_FACTORS = {
-    "Road":       62 / 1000,   # Backup!H15 =62/1000 = 0.062
-    "Rail":       22 / 1000,   # Backup!H16 =22/1000 = 0.022
-    "Sea (Ocean)": 16 / 1000,  # Backup!H17 =16/1000 = 0.016
-    "Air":        0.61,        # Backup!H18
+    "Road":        62 / 1000,   # Backup!H15 =62/1000 = 0.062
+    "Rail":        22 / 1000,   # Backup!H16 =22/1000 = 0.022
+    "Sea (Ocean)": 16 / 1000,   # Backup!H17 =16/1000 = 0.016
+    "Air":         0.61,        # Backup!H18
 }
 
 # Pallet fixed constants
@@ -105,7 +105,7 @@ def corrugated_adjusted_dims(length_mm: float, width_mm: float, height_mm: float
     """
     if enabled:
         return (length_mm + BOX_CLEARANCE,
-                width_mm + BOX_CLEARANCE,
+                width_mm  + BOX_CLEARANCE,
                 height_mm + BOX_CLEARANCE)
     else:
         return (0.0, 0.0, 0.0)
@@ -170,7 +170,7 @@ def wooden_box_adjusted_dims(length_mm: float, width_mm: float, height_mm: float
     """
     if enabled:
         return (length_mm + BOX_CLEARANCE,
-                width_mm + BOX_CLEARANCE,
+                width_mm  + BOX_CLEARANCE,
                 height_mm + BOX_CLEARANCE)
     else:
         return (0.0, 0.0, 0.0)
@@ -213,7 +213,7 @@ def pallet_volume(length_mm: float, width_mm: float) -> float:
     E25=G22=pallet_W, G25=90, H25=20, I25=3  (planks - fixed)
     """
     pallet_L = length_mm + BOX_CLEARANCE   # Excel E22 = E12+40
-    pallet_W = width_mm + BOX_CLEARANCE    # Excel G22 = G12+40
+    pallet_W = width_mm  + BOX_CLEARANCE   # Excel G22 = G12+40
 
     # Deck — Excel row 23
     deck_vol = pallet_L * pallet_W * PALLET_DECK_H * 1   # I23=1
@@ -343,9 +343,8 @@ def calculate_all(
     # Box settings
     ply: int,
     box_thickness_mm: float,
-    phys_wood_type_box: str, 
-    wood_type_box: str,      # 'Solidwood' or 'Plywood'
-    wood_type_pallet: str,   # 'Plywood' or 'Solidwood'
+    wood_type_box: str,       # 'Solidwood' or 'Plywood'  — Design side
+    wood_type_pallet: str,    # 'Plywood' or 'Solidwood'  — Design side
     # Enable flags (which packaging is used)
     use_corrugated: bool,
     use_wooden: bool,
@@ -359,6 +358,7 @@ def calculate_all(
     phys_pallet_kg: float,
     phys_plastic_kg: float,
     phys_plastic_type: str,
+    phys_wood_type_box: str,  # 'Solidwood' or 'Plywood'  — Physical side (NEW)
     phys_packaging_combo: str,  # 'corrugated+pallet' or 'wooden+pallet'
     transport_type_physical: str,
     phys_product_weight_kg: float,
@@ -366,32 +366,37 @@ def calculate_all(
 ) -> dict:
     """
     Master calculation matching the full Excel sheet.
+
+    phys_wood_type_box is the wood type selected on the Physical Input side.
+    It is used independently from wood_type_box (Design side) so each side
+    can have a different wood type without affecting the other.
+
     Returns a dict with all intermediate and final values.
     """
     results = {}
 
     # ── CORRUGATED BOX (Design) ──────────────────────────────
-    corr_area_m2 = corrugated_box_area(length_mm, width_mm, height_mm,
-                                       ply, enabled=use_corrugated)
+    corr_area_m2   = corrugated_box_area(length_mm, width_mm, height_mm,
+                                         ply, enabled=use_corrugated)
     corr_weight_kg = corrugated_box_weight(corr_area_m2, ply) if use_corrugated else 0.0
 
     results["corr_area_m2"]   = corr_area_m2
     results["corr_weight_kg"] = corr_weight_kg
 
     # ── WOODEN BOX (Design) ──────────────────────────────────
-    wood_vol_m3   = wooden_box_volume(length_mm, width_mm, height_mm,
-                                      box_thickness_mm, enabled=use_wooden)
+    wood_vol_m3    = wooden_box_volume(length_mm, width_mm, height_mm,
+                                       box_thickness_mm, enabled=use_wooden)
     wood_weight_kg = wooden_box_weight(wood_vol_m3) if use_wooden else 0.0
 
     results["wood_vol_m3"]    = wood_vol_m3
     results["wood_weight_kg"] = wood_weight_kg
 
     # ── PALLET (Design) ──────────────────────────────────────
-    pallet_vol_m3  = pallet_volume(length_mm, width_mm)
-    pallet_wt_kg   = pallet_weight(pallet_vol_m3)
+    pallet_vol_m3 = pallet_volume(length_mm, width_mm)
+    pallet_wt_kg  = pallet_weight(pallet_vol_m3)
 
-    results["pallet_vol_m3"]  = pallet_vol_m3
-    results["pallet_wt_kg"]   = pallet_wt_kg
+    results["pallet_vol_m3"] = pallet_vol_m3
+    results["pallet_wt_kg"]  = pallet_wt_kg
 
     # Pallet dims for display
     results["pallet_L_mm"] = length_mm + BOX_CLEARANCE
@@ -412,39 +417,35 @@ def calculate_all(
 
     # ── DESIGN CARBON EMISSIONS ──────────────────────────────
     # Excel logic: corrugated and wooden box are ALTERNATIVES (one OR the other)
-    # Excel E34: =IF(M12=TRUE, N16+N22, IF(M12=FALSE, N19+N22))
-    # M12=corrugated checkbox, M13=wooden checkbox — only ONE active at a time
-    # Material CO2 only includes the ACTIVE box type + pallet
     if use_corrugated:
-        co2_corr_design  = material_co2_corrugated(corr_weight_kg)
-        co2_wood_design  = 0.0  # wooden box not the active choice
+        co2_corr_design = material_co2_corrugated(corr_weight_kg)
+        co2_wood_design = 0.0
     else:
-        co2_corr_design  = 0.0  # corrugated not the active choice
-        co2_wood_design  = material_co2_wooden_box(wood_weight_kg, wood_type_box)
+        co2_corr_design = 0.0
+        co2_wood_design = material_co2_wooden_box(wood_weight_kg, wood_type_box)
 
-    co2_pallet_design  = material_co2_pallet(pallet_wt_kg, wood_type_pallet)
+    co2_pallet_design    = material_co2_pallet(pallet_wt_kg, wood_type_pallet)
     co2_transport_design = transport_co2_design(
         transport_type_design, design_total_weight_kg, distance_design_km
     )
     co2_material_design = co2_corr_design + co2_wood_design + co2_pallet_design
     co2_total_design    = co2_material_design + co2_transport_design
 
-    results["co2_corr_design"]       = co2_corr_design
-    results["co2_wood_design"]       = co2_wood_design
-    results["co2_pallet_design"]     = co2_pallet_design
-    results["co2_transport_design"]  = co2_transport_design
-    results["co2_material_design"]   = co2_material_design
-    results["co2_total_design"]      = co2_total_design
+    results["co2_corr_design"]      = co2_corr_design
+    results["co2_wood_design"]      = co2_wood_design
+    results["co2_pallet_design"]    = co2_pallet_design
+    results["co2_transport_design"] = co2_transport_design
+    results["co2_material_design"]  = co2_material_design
+    results["co2_total_design"]     = co2_total_design
 
     # ── PHYSICAL INPUT PATH ──────────────────────────────────
     # Excel U18: =IF($S$18=TRUE,$U$12+$U$14,0)
     # Excel U19: =IF($S$19=TRUE,$U$13+$U$14,0)
-    use_corr_phys  = (phys_packaging_combo == "corrugated+pallet")
-    use_wood_phys  = (phys_packaging_combo == "wooden+pallet")
-    phys_pkg_wt    = physical_packaging_weight_corr_pallet(
-        phys_corrugated_kg, phys_pallet_kg, use_corr_phys
-    ) + physical_packaging_weight_wood_pallet(
-        phys_wooden_kg, phys_pallet_kg, use_wood_phys
+    use_corr_phys = (phys_packaging_combo == "corrugated+pallet")
+    use_wood_phys = (phys_packaging_combo == "wooden+pallet")
+    phys_pkg_wt   = (
+        physical_packaging_weight_corr_pallet(phys_corrugated_kg, phys_pallet_kg, use_corr_phys)
+        + physical_packaging_weight_wood_pallet(phys_wooden_kg, phys_pallet_kg, use_wood_phys)
     )
 
     # Excel U34: =R34+T34  (phys_pkg_weight + phys_product_weight)
@@ -455,11 +456,14 @@ def calculate_all(
 
     # Physical material CO2
     # Excel W23 = U12 (corrugated physical weight)
-    co2_corr_phys    = material_co2_corrugated(phys_corrugated_kg)
+    co2_corr_phys   = material_co2_corrugated(phys_corrugated_kg)
+
     # Excel W24 = U13+U14 (wood + pallet)
-    wood_phys_total  = phys_wooden_kg + phys_pallet_kg
-    co2_wood_phys    = material_co2_wooden_box(wood_phys_total, phys_wood_type_box)
-    co2_plastic_phys = material_co2_plastic(phys_plastic_kg, phys_plastic_type)
+    # Uses phys_wood_type_box — the wood type chosen on the Physical Input side
+    wood_phys_total = phys_wooden_kg + phys_pallet_kg
+    co2_wood_phys   = material_co2_wooden_box(wood_phys_total, phys_wood_type_box)
+
+    co2_plastic_phys   = material_co2_plastic(phys_plastic_kg, phys_plastic_type)
     co2_transport_phys = transport_co2_physical(
         transport_type_physical, phys_total_weight_kg, distance_physical_km
     )

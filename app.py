@@ -29,6 +29,8 @@ from utils.formulas import (
     PLASTIC_EMISSION_FACTORS,
     EMISSION_FACTORS,
     BOX_CLEARANCE,
+    pallet_component_defaults,
+    pallet_component_weight_kg,
 )
 from utils.distance import get_distance
 from database.db import DatabaseManager, ProductManager, UserManager, ConfigManager, SessionManager
@@ -439,6 +441,12 @@ def _load_product_into_state(fields: dict):
     for k, v in fields.items():
         if v is not None:
             st.session_state[f"pf_{k}"] = v
+    pallet_overrides = fields.get("pallet_overrides") or {}
+    for row, overrides in pallet_overrides.items():
+        _prefix = f"pallet_{row.split('/')[0].lower()}"
+        for field_name, value in overrides.items():
+            if value is not None:
+                st.session_state[f"pf_{_prefix}_{field_name}"] = value
     st.session_state["product_loaded_name"] = fields.get("product_name", "")
 
 def render_auth_header():
@@ -824,17 +832,151 @@ elif page == "Calculate Carbon Emissions":
 
             st.markdown('<div class="sub-section-title">Wooden Pallet</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="info-box">Pallet dimensions auto-calculated from product size. '
-                'Fixed: Deck H=36mm · Runner 125×110×90mm (×9) · Planks W×90×20mm (×3)</div>',
+                '<div class="info-box">Pallet Size totals are calculated automatically. '
+                'Deck / Runner-Block / Plank-Runner dimensions, weight, and wood type '
+                'are editable per component (Weight always recalculates live).</div>',
                 unsafe_allow_html=True
             )
-            _wtp_opts    = ["Plywood", "Solidwood"]
-            _wtp_default = _pf("wood_type_pallet", "Plywood")
-            wood_type_pallet = st.selectbox(
-                "Wood Type (Pallet)", _wtp_opts,
-                index=_wtp_opts.index(_wtp_default) if _wtp_default in _wtp_opts else 0,
-                key="wt_pallet",
-            )
+
+            _wood_opts = ["Solidwood", "Plywood"]
+            _pallet_defaults = {d["row"]: d for d in pallet_component_defaults(length_mm, width_mm)}
+            _col_w = [1.6, 1.1, 1.2, 0.9, 0.9, 0.9, 0.8]
+            _headers = ["WOOD PALLET (mm)", "Weight (kg)", "Wood Type",
+                        "Length", "Width", "Height", "Count"]
+
+            def _pallet_header_row(cols):
+                for hcol, htext in zip(cols, _headers):
+                    hcol.markdown(
+                        f'<div style="font-weight:600;text-align:center;font-size:0.72rem;'
+                        f'color:#4A5F72;text-transform:uppercase;letter-spacing:0.5px;'
+                        f'padding-top:6px;">{htext}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            def _pallet_label_cell(col, text):
+                col.markdown(
+                    f'<div style="font-weight:600;text-align:center;padding-top:10px;">{text}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            _pallet_header_row(st.columns(_col_w))
+            _pallet_size_slot = st.empty()
+
+            # ── Deck — Length/Width read-only (from product size); Height/Count/Wood Type editable ──
+            _dd = _pallet_defaults["Deck"]
+            c = st.columns(_col_w)
+            _pallet_label_cell(c[0], "Deck")
+            deck_length = _dd["length_mm"]
+            deck_width  = _dd["width_mm"]
+            c[3].number_input("Deck Length", value=round(deck_length, 1), disabled=True,
+                               label_visibility="collapsed", key="pallet_deck_length_ro")
+            c[4].number_input("Deck Width", value=round(deck_width, 1), disabled=True,
+                               label_visibility="collapsed", key="pallet_deck_width_ro")
+            deck_height = c[5].number_input(
+                "Deck Height", value=_pf("pallet_deck_height_mm", float(_dd["height_mm"])),
+                step=1.0, format="%.1f", label_visibility="collapsed", key="pallet_deck_height_mm")
+            deck_count = c[6].number_input(
+                "Deck Count", value=_pf("pallet_deck_count", float(_dd["count"])),
+                min_value=0.0, step=1.0, format="%.0f",
+                label_visibility="collapsed", key="pallet_deck_count")
+            deck_wood_type = c[2].selectbox(
+                "Deck Wood Type", _wood_opts,
+                index=_wood_opts.index(_pf("pallet_deck_wood_type", "Solidwood")),
+                label_visibility="collapsed", key="pallet_deck_wood_type")
+            deck_weight = pallet_component_weight_kg(deck_length, deck_width, deck_height, deck_count)
+            c[1].number_input("Deck Weight", value=round(deck_weight, 3), disabled=True,
+                               label_visibility="collapsed", key="pallet_deck_weight_ro")
+
+            # ── Runner/Block — every cell editable ──
+            _rd = _pallet_defaults["Runner/Block"]
+            c = st.columns(_col_w)
+            _pallet_label_cell(c[0], "Runner/Block")
+            runner_length = c[3].number_input(
+                "Runner Length", value=_pf("pallet_runner_length_mm", float(_rd["length_mm"])),
+                step=1.0, format="%.1f", label_visibility="collapsed", key="pallet_runner_length_mm")
+            runner_width = c[4].number_input(
+                "Runner Width", value=_pf("pallet_runner_width_mm", float(_rd["width_mm"])),
+                step=1.0, format="%.1f", label_visibility="collapsed", key="pallet_runner_width_mm")
+            runner_height = c[5].number_input(
+                "Runner Height", value=_pf("pallet_runner_height_mm", float(_rd["height_mm"])),
+                step=1.0, format="%.1f", label_visibility="collapsed", key="pallet_runner_height_mm")
+            runner_count = c[6].number_input(
+                "Runner Count", value=_pf("pallet_runner_count", float(_rd["count"])),
+                min_value=0.0, step=1.0, format="%.0f",
+                label_visibility="collapsed", key="pallet_runner_count")
+            runner_wood_type = c[2].selectbox(
+                "Runner Wood Type", _wood_opts,
+                index=_wood_opts.index(_pf("pallet_runner_wood_type", "Solidwood")),
+                label_visibility="collapsed", key="pallet_runner_wood_type")
+            runner_weight = pallet_component_weight_kg(runner_length, runner_width, runner_height, runner_count)
+            c[1].number_input("Runner Weight", value=round(runner_weight, 3), disabled=True,
+                               label_visibility="collapsed", key="pallet_runner_weight_ro")
+
+            # ── Plank/Runner — Length read-only (=pallet width); Width/Height/Count/Wood Type editable ──
+            _pd = _pallet_defaults["Plank/Runner"]
+            c = st.columns(_col_w)
+            _pallet_label_cell(c[0], "Plank/Runner")
+            plank_length = _pd["length_mm"]
+            c[3].number_input("Plank Length", value=round(plank_length, 1), disabled=True,
+                               label_visibility="collapsed", key="pallet_plank_length_ro")
+            plank_width = c[4].number_input(
+                "Plank Width", value=_pf("pallet_plank_width_mm", float(_pd["width_mm"])),
+                step=1.0, format="%.1f", label_visibility="collapsed", key="pallet_plank_width_mm")
+            plank_height = c[5].number_input(
+                "Plank Height", value=_pf("pallet_plank_height_mm", float(_pd["height_mm"])),
+                step=1.0, format="%.1f", label_visibility="collapsed", key="pallet_plank_height_mm")
+            plank_count = c[6].number_input(
+                "Plank Count", value=_pf("pallet_plank_count", float(_pd["count"])),
+                min_value=0.0, step=1.0, format="%.0f",
+                label_visibility="collapsed", key="pallet_plank_count")
+            plank_wood_type = c[2].selectbox(
+                "Plank Wood Type", _wood_opts,
+                index=_wood_opts.index(_pf("pallet_plank_wood_type", "Solidwood")),
+                label_visibility="collapsed", key="pallet_plank_wood_type")
+            plank_weight = pallet_component_weight_kg(plank_length, plank_width, plank_height, plank_count)
+            c[1].number_input("Plank Weight", value=round(plank_weight, 3), disabled=True,
+                               label_visibility="collapsed", key="pallet_plank_weight_ro")
+
+            pallet_components = [
+                {"row": "Deck", "length_mm": deck_length, "width_mm": deck_width,
+                 "height_mm": deck_height, "count": deck_count,
+                 "weight_kg": deck_weight, "wood_type": deck_wood_type},
+                {"row": "Runner/Block", "length_mm": runner_length, "width_mm": runner_width,
+                 "height_mm": runner_height, "count": runner_count,
+                 "weight_kg": runner_weight, "wood_type": runner_wood_type},
+                {"row": "Plank/Runner", "length_mm": plank_length, "width_mm": plank_width,
+                 "height_mm": plank_height, "count": plank_count,
+                 "weight_kg": plank_weight, "wood_type": plank_wood_type},
+            ]
+            pallet_overrides = {
+                "Deck": {"height_mm": deck_height, "count": deck_count, "wood_type": deck_wood_type},
+                "Runner/Block": {"length_mm": runner_length, "width_mm": runner_width,
+                                 "height_mm": runner_height, "count": runner_count,
+                                 "wood_type": runner_wood_type},
+                "Plank/Runner": {"width_mm": plank_width, "height_mm": plank_height,
+                                 "count": plank_count, "wood_type": plank_wood_type},
+            }
+
+            _pallet_size_weight = sum(c["weight_kg"] for c in pallet_components)
+            _distinct_types = {c["wood_type"] for c in pallet_components}
+            _consolidated_type = next(iter(_distinct_types)) if len(_distinct_types) == 1 else "Mixed"
+
+            with _pallet_size_slot.container():
+                sc = st.columns(_col_w)
+                _pallet_label_cell(sc[0], "Pallet Size")
+                sc[1].number_input("Pallet Size Weight", value=round(_pallet_size_weight, 3), disabled=True,
+                                    label_visibility="collapsed", key="pallet_size_weight_ro")
+                sc[2].text_input("Pallet Size Wood Type", value=_consolidated_type, disabled=True,
+                                  label_visibility="collapsed", key="pallet_size_wood_type_ro")
+                sc[3].number_input("Pallet Size Length", value=round(length_mm + BOX_CLEARANCE, 1), disabled=True,
+                                    label_visibility="collapsed", key="pallet_size_length_ro")
+                sc[4].number_input("Pallet Size Width", value=round(width_mm + BOX_CLEARANCE, 1), disabled=True,
+                                    label_visibility="collapsed", key="pallet_size_width_ro")
+                sc[5].number_input("Pallet Size Height",
+                                    value=round(sum(c["height_mm"] for c in pallet_components), 1),
+                                    disabled=True, label_visibility="collapsed", key="pallet_size_height_ro")
+                sc[6].text_input("Pallet Size Count", value="—", disabled=True,
+                                  label_visibility="collapsed", key="pallet_size_count_ro")
 
             st.markdown("---")
 
@@ -973,7 +1115,7 @@ elif page == "Calculate Carbon Emissions":
     results = calculate_all(
         length_mm=length_mm, width_mm=width_mm, height_mm=height_mm,
         ply=ply, box_thickness_mm=thickness_mm,
-        wood_type_box=wood_type_box, wood_type_pallet=wood_type_pallet,
+        wood_type_box=wood_type_box, pallet_components=pallet_components,
         use_corrugated=use_corrugated, use_wooden=use_wooden,
         transport_type_design=transport_design,
         product_weight_kg=product_weight_kg,
@@ -1025,7 +1167,7 @@ elif page == "Calculate Carbon Emissions":
         results = calculate_all(
             length_mm=length_mm, width_mm=width_mm, height_mm=height_mm,
             ply=ply, box_thickness_mm=thickness_mm,
-            wood_type_box=wood_type_box, wood_type_pallet=wood_type_pallet,
+            wood_type_box=wood_type_box, pallet_components=pallet_components,
             use_corrugated=use_corrugated, use_wooden=use_wooden,
             transport_type_design=transport_design,
             product_weight_kg=product_weight_kg,
@@ -1046,7 +1188,7 @@ elif page == "Calculate Carbon Emissions":
             "pc_name": pc_name, "product_name": product_name,
             "length_mm": length_mm, "width_mm": width_mm, "height_mm": height_mm,
             "box_choice": box_choice, "fefco_type": fefco_type, "ply": ply, "thickness_mm": thickness_mm,
-            "wood_type_box": wood_type_box, "wood_type_pallet": wood_type_pallet,
+            "wood_type_box": wood_type_box, "pallet_overrides": pallet_overrides,
             "transport_design": transport_design,
             "product_weight_kg": product_weight_kg,
             "distance_design_km": distance_design_km,
@@ -1206,7 +1348,7 @@ elif page == "Calculate Carbon Emissions":
             "pc_name": pc_name, "product_name": product_name,
             "length_mm": length_mm, "width_mm": width_mm, "height_mm": height_mm,
             "box_choice": box_choice, "fefco_type": fefco_type, "ply": ply, "thickness_mm": thickness_mm,
-            "wood_type_box": wood_type_box, "wood_type_pallet": wood_type_pallet,
+            "wood_type_box": wood_type_box, "pallet_overrides": pallet_overrides,
             "transport_design": transport_design,
             "product_weight_kg": product_weight_kg,
             "distance_design_km": distance_design_km,

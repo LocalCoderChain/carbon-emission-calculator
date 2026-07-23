@@ -140,7 +140,7 @@ class DatabaseManager:
 _PRODUCT_FIELDS = [
     "pc_name", "product_name",
     "length_mm", "width_mm", "height_mm",
-    "box_choice", "fefco_type", "ply", "thickness_mm", "wood_type_box", "wood_type_pallet",
+    "box_choice", "fefco_type", "ply", "thickness_mm", "wood_type_box", "pallet_overrides",
     "transport_design", "product_weight_kg",
     "phys_corrugated_kg", "phys_wooden_kg", "phys_pallet_kg", "phys_plastic_kg",
     "phys_plastic_type", "phys_wood_type",

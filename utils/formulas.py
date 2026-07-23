@@ -202,10 +202,20 @@ def wooden_box_weight(volume_m3: float) -> float:
 
 # ─── 2.3  WOODEN PALLET ──────────────────────────────────────────────────────
 
-def pallet_volume(length_mm: float, width_mm: float) -> float:
+def pallet_component_weight_kg(length_mm: float, width_mm: float,
+                               height_mm: float, count: float) -> float:
+    """Weight (kg) for one pallet component from its own L/W/H/Count."""
+    volume_m3 = (length_mm * width_mm * height_mm * count) / 1_000_000_000
+    return volume_m3 * PALLET_DENSITY
+
+
+def pallet_component_defaults(length_mm: float, width_mm: float) -> list[dict]:
     """
-    Excel M22:
-    =((E23*G23*H23) + (E24*G24*H24)*I24 + (E25*G25*H25)*I25) / 1000000000
+    Default per-component pallet dimensions (Deck / Runner-Block / Plank-Runner)
+    before any per-calculation edits — matches the original Excel-fixed layout.
+    Deck's L/W and Plank/Runner's L follow the product's pallet footprint;
+    everything else starts from the admin-configured fixed constants but is
+    editable per-calculation from here (see pallet_component_weight_kg).
 
     Pallet L = E12+40, Pallet W = G12+40 (same clearance as box)
     E23=E22=pallet_L, G23=G22=pallet_W, H23=36 (deck height, fixed)
@@ -215,18 +225,32 @@ def pallet_volume(length_mm: float, width_mm: float) -> float:
     pallet_L = length_mm + BOX_CLEARANCE   # Excel E22 = E12+40
     pallet_W = width_mm  + BOX_CLEARANCE   # Excel G22 = G12+40
 
-    # Deck — Excel row 23
-    deck_vol = pallet_L * pallet_W * PALLET_DECK_H * 1   # I23=1
+    return [
+        {"row": "Deck", "length_mm": pallet_L, "width_mm": pallet_W,
+         "height_mm": PALLET_DECK_H, "count": 1},
+        {"row": "Runner/Block", "length_mm": PALLET_RUNNER_L, "width_mm": PALLET_RUNNER_W,
+         "height_mm": PALLET_RUNNER_H, "count": PALLET_RUNNER_COUNT},
+        {"row": "Plank/Runner", "length_mm": pallet_W, "width_mm": PALLET_PLANK_W,
+         "height_mm": PALLET_PLANK_H, "count": PALLET_PLANK_COUNT},
+    ]
 
-    # Runner/Block — Excel row 24 (fixed dims)
-    runner_vol = (PALLET_RUNNER_L * PALLET_RUNNER_W *
-                  PALLET_RUNNER_H * PALLET_RUNNER_COUNT)
 
-    # Plank/Runner — Excel row 25 (E25=G22=pallet_W)
-    plank_vol = pallet_W * PALLET_PLANK_W * PALLET_PLANK_H * PALLET_PLANK_COUNT
+def pallet_component_breakdown(length_mm: float, width_mm: float) -> list[dict]:
+    """Defaults plus their computed volume/weight — used where no edits apply."""
+    rows = pallet_component_defaults(length_mm, width_mm)
+    for r in rows:
+        weight = pallet_component_weight_kg(r["length_mm"], r["width_mm"], r["height_mm"], r["count"])
+        r["volume_m3"] = weight / PALLET_DENSITY
+        r["weight_kg"] = weight
+    return rows
 
-    total_vol_m3 = (deck_vol + runner_vol + plank_vol) / 1_000_000_000
-    return total_vol_m3
+
+def pallet_volume(length_mm: float, width_mm: float) -> float:
+    """
+    Excel M22:
+    =((E23*G23*H23) + (E24*G24*H24)*I24 + (E25*G25*H25)*I25) / 1000000000
+    """
+    return sum(c["volume_m3"] for c in pallet_component_breakdown(length_mm, width_mm))
 
 
 def pallet_weight(volume_m3: float) -> float:
@@ -294,6 +318,19 @@ def material_co2_pallet(pallet_weight_kg: float, wood_type: str) -> float:
     return pallet_weight_kg * factor
 
 
+def material_co2_pallet_by_component(components: list[dict]) -> float:
+    """
+    Sum CO2 across pallet sub-components (Deck / Runner-Block / Plank-Runner),
+    each using its own weight and wood type (each component dict must carry
+    "weight_kg" and "wood_type"). Passing the same wood type for every row
+    gives the same total as material_co2_pallet(total_weight, wood_type).
+    """
+    return sum(
+        material_co2_pallet(c["weight_kg"], c.get("wood_type", "Solidwood"))
+        for c in components
+    )
+
+
 def material_co2_plastic(plastic_weight_kg: float, plastic_type: str) -> float:
     """
     Excel X30:
@@ -344,7 +381,9 @@ def calculate_all(
     ply: int,
     box_thickness_mm: float,
     wood_type_box: str,       # 'Solidwood' or 'Plywood'  — Design side
-    wood_type_pallet: str,    # 'Plywood' or 'Solidwood'  — Design side
+    pallet_components: list[dict],  # resolved Deck/Runner-Block/Plank-Runner rows
+                                     # (each with length_mm/width_mm/height_mm/count/
+                                     # weight_kg/wood_type, post any per-calc edits)
     # Enable flags (which packaging is used)
     use_corrugated: bool,
     use_wooden: bool,
@@ -392,16 +431,17 @@ def calculate_all(
     results["wood_weight_kg"] = wood_weight_kg
 
     # ── PALLET (Design) ──────────────────────────────────────
-    pallet_vol_m3 = pallet_volume(length_mm, width_mm)
-    pallet_wt_kg  = pallet_weight(pallet_vol_m3)
+    pallet_wt_kg  = sum(c["weight_kg"] for c in pallet_components)
+    pallet_vol_m3 = pallet_wt_kg / PALLET_DENSITY
 
-    results["pallet_vol_m3"] = pallet_vol_m3
-    results["pallet_wt_kg"]  = pallet_wt_kg
+    results["pallet_components"] = pallet_components
+    results["pallet_vol_m3"]     = pallet_vol_m3
+    results["pallet_wt_kg"]      = pallet_wt_kg
 
     # Pallet dims for display
     results["pallet_L_mm"] = length_mm + BOX_CLEARANCE
     results["pallet_W_mm"] = width_mm  + BOX_CLEARANCE
-    results["pallet_H_mm"] = PALLET_DECK_H + PALLET_RUNNER_H + PALLET_PLANK_H
+    results["pallet_H_mm"] = sum(c["height_mm"] for c in pallet_components)
 
     # ── DESIGN PACKAGING WEIGHT (for transport) ──────────────
     # Excel E34: =IF(M12=TRUE, N16+N22, IF(M12=FALSE, N19+N22))
@@ -424,7 +464,7 @@ def calculate_all(
         co2_corr_design = 0.0
         co2_wood_design = material_co2_wooden_box(wood_weight_kg, wood_type_box)
 
-    co2_pallet_design    = material_co2_pallet(pallet_wt_kg, wood_type_pallet)
+    co2_pallet_design    = material_co2_pallet_by_component(pallet_components)
     co2_transport_design = transport_co2_design(
         transport_type_design, design_total_weight_kg, distance_design_km
     )

@@ -840,7 +840,7 @@ elif page == "Calculate Carbon Emissions":
 
             _wood_opts = ["Solidwood", "Plywood"]
             _pallet_defaults = {d["row"]: d for d in pallet_component_defaults(length_mm, width_mm)}
-            _col_w = [1.6, 1.1, 1.2, 0.9, 0.9, 0.9, 0.8]
+            _col_w = [1.6, 1.0, 1.6, 0.85, 0.85, 0.85, 0.7]
             _headers = ["WOOD PALLET (mm)", "Weight (kg)", "Wood Type",
                         "Length", "Width", "Height", "Count"]
 
@@ -882,7 +882,8 @@ elif page == "Calculate Carbon Emissions":
             deck_wood_type = c[2].selectbox(
                 "Deck Wood Type", _wood_opts,
                 index=_wood_opts.index(_pf("pallet_deck_wood_type", "Solidwood")),
-                label_visibility="collapsed", key="pallet_deck_wood_type")
+                format_func=lambda x: x[:3], label_visibility="collapsed",
+                key="pallet_deck_wood_type")
             deck_weight = pallet_component_weight_kg(deck_length, deck_width, deck_height, deck_count)
             c[1].number_input("Deck Weight", value=round(deck_weight, 3), disabled=True,
                                label_visibility="collapsed", key="pallet_deck_weight_ro")
@@ -907,7 +908,8 @@ elif page == "Calculate Carbon Emissions":
             runner_wood_type = c[2].selectbox(
                 "Runner Wood Type", _wood_opts,
                 index=_wood_opts.index(_pf("pallet_runner_wood_type", "Solidwood")),
-                label_visibility="collapsed", key="pallet_runner_wood_type")
+                format_func=lambda x: x[:3], label_visibility="collapsed",
+                key="pallet_runner_wood_type")
             runner_weight = pallet_component_weight_kg(runner_length, runner_width, runner_height, runner_count)
             c[1].number_input("Runner Weight", value=round(runner_weight, 3), disabled=True,
                                label_visibility="collapsed", key="pallet_runner_weight_ro")
@@ -932,7 +934,8 @@ elif page == "Calculate Carbon Emissions":
             plank_wood_type = c[2].selectbox(
                 "Plank Wood Type", _wood_opts,
                 index=_wood_opts.index(_pf("pallet_plank_wood_type", "Solidwood")),
-                label_visibility="collapsed", key="pallet_plank_wood_type")
+                format_func=lambda x: x[:3], label_visibility="collapsed",
+                key="pallet_plank_wood_type")
             plank_weight = pallet_component_weight_kg(plank_length, plank_width, plank_height, plank_count)
             c[1].number_input("Plank Weight", value=round(plank_weight, 3), disabled=True,
                                label_visibility="collapsed", key="pallet_plank_weight_ro")
@@ -959,7 +962,8 @@ elif page == "Calculate Carbon Emissions":
 
             _pallet_size_weight = sum(c["weight_kg"] for c in pallet_components)
             _distinct_types = {c["wood_type"] for c in pallet_components}
-            _consolidated_type = next(iter(_distinct_types)) if len(_distinct_types) == 1 else "Mixed"
+            _consolidated_type = (next(iter(_distinct_types))[:3] if len(_distinct_types) == 1
+                                   else "Mix")
 
             with _pallet_size_slot.container():
                 sc = st.columns(_col_w)

@@ -1,6 +1,6 @@
 # Carbon Emission Calculator
 
-A full-stack Streamlit application for estimating carbon emissions generated from packaging materials and transportation methods — built for Atlas Copco-style packaging workflows, with Google SSO, role-based admin tooling, and automatic distance calculation.
+A full-stack Streamlit application for estimating carbon emissions generated from packaging materials and transportation methods - built for Atlas Copco-style packaging workflows, with Google SSO, role-based admin tooling, and automatic distance calculation.
 
 The tool lets users model a shipment's packaging (corrugated box, wooden box, wooden pallet) two ways — a **Design Calculation** from product dimensions, or a **Physical Input** from measured weights — estimate CO₂ emissions across materials and transport, compare the two paths, and store historical calculations for later analysis.
 
@@ -8,12 +8,12 @@ The tool lets users model a shipment's packaging (corrugated box, wooden box, wo
 
 ## Key Highlights
 
-* **Authentication & Authorization** — Google OAuth 2.0 login with a database-backed session layer and role-based access control (admin vs. standard user)
-* **Admin Dashboard** — user management, live-editable emission/transport factors, active session control, and soft-delete/restore for calculation records
-* **External API Integration** — automatic road/rail/sea/air distance lookups via the OpenRouteService geocoding + routing APIs
-* **Secure Configuration** — all API keys, OAuth credentials, and DB credentials are read from environment variables (`.env`), never hardcoded
-* **Data Integrity** — soft-delete pattern for calculation records (users can delete their own records; admins retain full visibility and can restore them)
-* **Interactive Calculation Grid** — a live, per-component pallet breakdown (Deck / Runner-Block / Plank-Runner) with editable dimensions and wood type per row, weight recalculating in real time
+* **Authentication & Authorization** - Google OAuth 2.0 login with a database-backed session layer and role-based access control (admin vs. standard user)
+* **Admin Dashboard** - user management, live-editable emission/transport factors, active session control, and soft-delete/restore for calculation records
+* **External API Integration** - automatic road/rail/sea/air distance lookups via the OpenRouteService geocoding + routing APIs
+* **Secure Configuration** - all API keys, OAuth credentials, and DB credentials are read from environment variables (`.env`), never hardcoded
+* **Data Integrity** - soft-delete pattern for calculation records (users can delete their own records; admins retain full visibility and can restore them)
+* **Interactive Calculation Grid** - a live, per-component pallet breakdown (Deck / Runner-Block / Plank-Runner) with editable dimensions and wood type per row, weight recalculating in real time
 
 ---
 
@@ -21,7 +21,7 @@ The tool lets users model a shipment's packaging (corrugated box, wooden box, wo
 
 **Calculation Engine**
 * Packaging weight estimation from product dimensions (corrugated box, wooden box, wooden pallet)
-* Per-component pallet breakdown — Deck, Runner/Block, and Plank/Runner each with independently editable dimensions, count, and wood type; weight and CO₂ recompute live
+* Per-component pallet breakdown - Deck, Runner/Block, and Plank/Runner each with independently editable dimensions, count, and wood type; weight and CO₂ recompute live
 * FEFCO box style selection (201 / 200 / 310) for corrugated boxes — recorded per calculation for reporting; not yet factored into the weight formula
 * Carbon emission calculations for packaging materials and 5 plastic subtypes
 * Transport emission calculations for Road, Rail, Sea, and Air
@@ -38,7 +38,7 @@ The tool lets users model a shipment's packaging (corrugated box, wooden box, wo
 * Per-user "My Calculations" view, gated behind login
 * Soft-delete for calculation records — hidden from the user, recoverable by an admin
 * A statistics panel (average / lowest / highest CO₂) once a user has 25+ saved calculations
-* Reusable product templates — save, load, rename, and delete full input sets
+* Reusable product templates - save, load, rename, and delete full input sets
 
 **Distance & Transport**
 * Automatic road/rail distance and straight-line air/sea distance via OpenRouteService
@@ -65,7 +65,7 @@ The tool lets users model a shipment's packaging (corrugated box, wooden box, wo
 ```text
 carbon_calculator_github/
 │
-├── app.py                    # Main Streamlit app — UI, routing, calculation orchestration
+├── app.py                    # Main Streamlit app - UI, routing, calculation orchestration
 ├── requirements.txt
 ├── README.md
 ├── .env.example               # Template for required environment variables

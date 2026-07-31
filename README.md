@@ -84,7 +84,6 @@ carbon_calculator_github/
 │   ├── formulas.py               # Emission/weight calculation engine
 │   └── distance.py                # OpenRouteService geocoding + routing
 ├── assets/
-├── docs/
 └── screenshots/
 ```
 

@@ -2,7 +2,7 @@
 
 A full-stack Streamlit application for estimating carbon emissions generated from packaging materials and transportation methods - built for Atlas Copco-style packaging workflows, with Google SSO, role-based admin tooling, and automatic distance calculation.
 
-The tool lets users model a shipment's packaging (corrugated box, wooden box, wooden pallet) two ways — a **Design Calculation** from product dimensions, or a **Physical Input** from measured weights — estimate CO₂ emissions across materials and transport, compare the two paths, and store historical calculations for later analysis.
+The tool lets users model a shipment's packaging (corrugated box, wooden box, wooden pallet) two ways - a **Design Calculation** from product dimensions, or a **Physical Input** from measured weights - estimate CO₂ emissions across materials and transport, compare the two paths, and store historical calculations for later analysis.
 
 ---
 

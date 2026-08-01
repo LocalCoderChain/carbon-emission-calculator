@@ -1460,6 +1460,41 @@ elif page == "My Calculations":
             unsafe_allow_html=True
         )
 
+        record_dates = []
+        for r in records:
+            try:
+                record_dates.append(
+                    datetime.strptime(str(r.get("timestamp", "")), "%Y-%m-%d %H:%M:%S").date()
+                )
+            except Exception:
+                pass
+
+        if record_dates:
+            min_date, max_date = min(record_dates), max(record_dates)
+            st.markdown("**Filter by Date**")
+            date_from_col, date_to_col = st.columns(2)
+            with date_from_col:
+                date_from = st.date_input("From", value=min_date, min_value=min_date,
+                                           max_value=max_date, key="my_calc_date_from")
+            with date_to_col:
+                date_to = st.date_input("To", value=max_date, min_value=min_date,
+                                         max_value=max_date, key="my_calc_date_to")
+
+            def _in_date_range(r):
+                try:
+                    d = datetime.strptime(str(r.get("timestamp", "")), "%Y-%m-%d %H:%M:%S").date()
+                except Exception:
+                    return True
+                return date_from <= d <= date_to
+
+            records = [r for r in records if _in_date_range(r)]
+            st.markdown(
+                f'<div style="color:#8D9BAD;font-size:0.78rem;margin-bottom:10px;">'
+                f'Showing {len(records)} record(s) from {date_from.strftime("%d %b %Y")} '
+                f'to {date_to.strftime("%d %b %Y")}</div>',
+                unsafe_allow_html=True
+            )
+
         table_rows = []
         for r in records:
             inp = r.get("inputs", {})
@@ -1492,35 +1527,46 @@ elif page == "My Calculations":
             })
 
         df = pd.DataFrame(table_rows)
-        st.dataframe(df, use_container_width=True, hide_index=True,
-                     column_config={
-                         "CO₂ Design":   st.column_config.NumberColumn("CO₂ Design (kg)",   format="%.4f"),
-                         "CO₂ Physical": st.column_config.NumberColumn("CO₂ Physical (kg)", format="%.4f"),
-                     })
+        df["Delete"] = False
 
-        st.markdown("---")
-        with st.container(border=True):
-            st.markdown('<div class="section-title">Record Actions</div>', unsafe_allow_html=True)
-            ids    = [r.get("id") for r in records]
-            del_id = st.selectbox("Select Record ID to Delete", ids, key="del_sel")
-            if st.button("Delete Selected Record"):
-                db.delete_calculation(del_id)
-                st.success(f"Record #{del_id} deleted.")
-                st.rerun()
+        st.markdown(
+            '<div style="color:#8D9BAD;font-size:0.78rem;margin-bottom:6px;">'
+            'Check the Delete box on a row to remove it.</div>',
+            unsafe_allow_html=True
+        )
+        edited_df = st.data_editor(
+            df, use_container_width=True, hide_index=True,
+            disabled=[c for c in df.columns if c != "Delete"],
+            column_config={
+                "CO₂ Design":   st.column_config.NumberColumn("CO₂ Design (kg)",   format="%.4f"),
+                "CO₂ Physical": st.column_config.NumberColumn("CO₂ Physical (kg)", format="%.4f"),
+                "Delete":       st.column_config.CheckboxColumn("Delete"),
+            },
+            key="my_calc_editor",
+        )
 
-            sel_id  = st.selectbox("Select Record ID to Inspect", ids, key="inspect_id")
-            sel_rec = next((r for r in records if r.get("id") == sel_id), None)
-            if sel_rec:
-                with st.expander(f"Full Detail — Record #{sel_id}", expanded=False):
-                    ic, oc = st.columns(2)
-                    with ic:
-                        st.markdown("**Inputs**")
-                        st.json(sel_rec.get("inputs", {}))
-                    with oc:
-                        st.markdown("**Outputs**")
-                        st.json(sel_rec.get("outputs", {}))
-                    if sel_rec.get("description"):
-                        st.markdown(f"**Notes:** {sel_rec['description']}")
+        @st.dialog("Confirm Deletion")
+        def _confirm_delete(record_id):
+            st.markdown(
+                f'<span style="color:#D32F2F;font-weight:700;font-size:1.05rem;">'
+                f'Delete Record #{record_id}</span>',
+                unsafe_allow_html=True
+            )
+            st.markdown("Are you sure?")
+            ok_col, cancel_col = st.columns(2)
+            with ok_col:
+                if st.button("OK", key=f"confirm_del_{record_id}", use_container_width=True):
+                    db.delete_calculation(record_id)
+                    st.session_state["my_calc_editor"]["edited_rows"] = {}
+                    st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key=f"cancel_del_{record_id}", use_container_width=True):
+                    st.session_state["my_calc_editor"]["edited_rows"] = {}
+                    st.rerun()
+
+        marked = edited_df[edited_df["Delete"]]
+        if not marked.empty:
+            _confirm_delete(int(marked.iloc[0]["ID"]))
 
         if len(records) >= 25:
             st.markdown("---")

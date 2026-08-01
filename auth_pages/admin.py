@@ -12,6 +12,7 @@ Sections:
 
 import os
 import json
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 
@@ -143,6 +144,41 @@ def render():
                 st.markdown(
                     f'<div style="color:#8D9BAD;font-size:0.78rem;margin-bottom:10px;">'
                     f'Showing {len(records)} record(s) for {filter_user}</div>',
+                    unsafe_allow_html=True
+                )
+
+            record_dates = []
+            for r in records:
+                try:
+                    record_dates.append(
+                        datetime.strptime(str(r.get("timestamp", "")), "%Y-%m-%d %H:%M:%S").date()
+                    )
+                except Exception:
+                    pass
+
+            if record_dates:
+                min_date, max_date = min(record_dates), max(record_dates)
+                st.markdown("**Filter by Date**")
+                date_from_col, date_to_col = st.columns(2)
+                with date_from_col:
+                    date_from = st.date_input("From", value=min_date, min_value=min_date,
+                                               max_value=max_date, key="admin_calc_date_from")
+                with date_to_col:
+                    date_to = st.date_input("To", value=max_date, min_value=min_date,
+                                             max_value=max_date, key="admin_calc_date_to")
+
+                def _in_date_range(r):
+                    try:
+                        d = datetime.strptime(str(r.get("timestamp", "")), "%Y-%m-%d %H:%M:%S").date()
+                    except Exception:
+                        return True
+                    return date_from <= d <= date_to
+
+                records = [r for r in records if _in_date_range(r)]
+                st.markdown(
+                    f'<div style="color:#8D9BAD;font-size:0.78rem;margin-bottom:10px;">'
+                    f'Showing {len(records)} record(s) from {date_from.strftime("%d %b %Y")} '
+                    f'to {date_to.strftime("%d %b %Y")}</div>',
                     unsafe_allow_html=True
                 )
 

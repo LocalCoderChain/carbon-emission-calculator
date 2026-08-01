@@ -22,7 +22,7 @@ The tool lets users model a shipment's packaging (corrugated box, wooden box, wo
 **Calculation Engine**
 * Packaging weight estimation from product dimensions (corrugated box, wooden box, wooden pallet)
 * Per-component pallet breakdown - Deck, Runner/Block, and Plank/Runner each with independently editable dimensions, count, and wood type; weight and CO₂ recompute live
-* FEFCO box style selection (201 / 200 / 310) for corrugated boxes — recorded per calculation for reporting; not yet factored into the weight formula
+* FEFCO box style selection (201 / 200 / 310) for corrugated boxes - recorded per calculation for reporting; not yet factored into the weight formula
 * Carbon emission calculations for packaging materials and 5 plastic subtypes
 * Transport emission calculations for Road, Rail, Sea, and Air
 * Side-by-side comparison of Design Calculation vs. Physical Input paths
@@ -36,7 +36,7 @@ The tool lets users model a shipment's packaging (corrugated box, wooden box, wo
 **Data & History**
 * Historical calculation storage (SQLite by default, optional MySQL)
 * Per-user "My Calculations" view, gated behind login
-* Soft-delete for calculation records — hidden from the user, recoverable by an admin
+* Soft-delete for calculation records - hidden from the user, recoverable by an admin
 * A statistics panel (average / lowest / highest CO₂) once a user has 25+ saved calculations
 * Reusable product templates - save, load, rename, and delete full input sets
 
@@ -119,9 +119,9 @@ cp .env.example .env
 
 | Variable | Required? | Notes |
 | -------- | --------- | ----- |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional | From a Google Cloud OAuth 2.0 Client ID — needed for login. App runs without it, just without SSO. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional | From a Google Cloud OAuth 2.0 Client ID - needed for login. App runs without it, just without SSO. |
 | `GOOGLE_REDIRECT_URI` | Optional | Defaults to `http://localhost:8501` |
-| `ORS_API_KEY` | Optional | Free key from [openrouteservice.org](https://openrouteservice.org/dev/#/signup) — needed for automatic distance calculation. Manual distance entry works without it. |
+| `ORS_API_KEY` | Optional | Free key from [openrouteservice.org](https://openrouteservice.org/dev/#/signup) - needed for automatic distance calculation. Manual distance entry works without it. |
 | `ADMIN_EMAILS` | Optional | Comma-separated list of emails granted admin role on first login |
 | `DB_*` | Optional | Only needed if using MySQL instead of the SQLite default |
 
@@ -138,7 +138,7 @@ The app opens automatically in your browser.
 
 ## Database
 
-SQLite is used by default and created automatically on first launch — zero setup required. MySQL is supported as a drop-in alternative via the `.env` configuration.
+SQLite is used by default and created automatically on first launch - zero setup required. MySQL is supported as a drop-in alternative via the `.env` configuration.
 
 ---
 
@@ -149,7 +149,7 @@ The application can calculate:
 * Corrugated box weight and area
 * Wooden box weight and volume
 * Per-component wooden pallet weight (Deck / Runner-Block / Plank-Runner)
-* Packaging material emissions (corrugated, wood, plastic — 5 subtypes)
+* Packaging material emissions (corrugated, wood, plastic - 5 subtypes)
 * Transportation emissions across Road, Rail, Sea, and Air
 * Total carbon footprint, compared across Design vs. Physical input methods
 
@@ -173,7 +173,7 @@ Example validation case:
 
 ## Screenshots
 
-Screenshots live in the `screenshots/` directory. Current set covers the calculator, database, and settings views — a refreshed set covering the newer features is planned, including:
+Screenshots live in the `screenshots/` directory. Current set covers the calculator, database, and settings views - a refreshed set covering the newer features is planned, including:
 
 * Google Sign-In flow
 * Calculator with the pallet component grid

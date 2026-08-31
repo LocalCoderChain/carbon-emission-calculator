@@ -6,6 +6,7 @@ v1.3 — Product templates, auto-distance, Google SSO, Admin panel
 
 import sys
 import os
+import html
 
 if getattr(sys, "frozen", False):
     BASE_DIR = sys._MEIPASS
@@ -518,7 +519,7 @@ with st.sidebar:
     if _user:
         st.markdown(
             f'<div style="font-size:0.72rem;color:#00A878;margin-top:4px;">◆ &nbsp;'
-            f'Signed in as {_user.get("name","").split()[0]}</div>',
+            f'Signed in as {html.escape(_user.get("name","").split()[0]) if _user.get("name") else ""}</div>',
             unsafe_allow_html=True
         )
         if st.button("Sign Out", key="signout_sidebar_btn", use_container_width=True):
@@ -588,9 +589,9 @@ def distance_widget(section_key: str, transport_type: str, default_distance: flo
                 km, msg = get_distance(origin, destination, transport_type, ORS_API_KEY)
             if km is not None:
                 st.session_state[f"auto_km_{section_key}"] = km
-                st.markdown(f'<div class="info-box">{msg}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="info-box">{html.escape(msg)}</div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div class="warn-box">{msg}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="warn-box">{html.escape(msg)}</div>', unsafe_allow_html=True)
         elif auto_calc:
             st.markdown('<div class="warn-box">Please enter both origin and destination.</div>',
                         unsafe_allow_html=True)
@@ -705,7 +706,7 @@ elif page == "Calculate Carbon Emissions":
             f'<div class="product-loaded-banner">'
             f'<span style="color:#00AEEF;font-size:1.1rem">◈</span>'
             f'&nbsp; Product template loaded: '
-            f'<b>{st.session_state["product_loaded_name"]}</b>'
+            f'<b>{html.escape(st.session_state["product_loaded_name"])}</b>'
             f'&nbsp;— modify any field and recalculate.</div>',
             unsafe_allow_html=True,
         )
@@ -731,7 +732,7 @@ elif page == "Calculate Carbon Emissions":
                 matches  = [p for p in existing if product_name.strip().lower() in p.lower()]
                 if matches:
                     st.markdown(
-                        f'<div class="warn-box">⚠ Template exists: <b>{matches[0]}</b>. '
+                        f'<div class="warn-box">⚠ Template exists: <b>{html.escape(matches[0])}</b>. '
                         f'Use <b>Load Product</b> above to pre-fill all fields.</div>',
                         unsafe_allow_html=True
                     )

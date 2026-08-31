@@ -12,6 +12,7 @@ Sections:
 
 import os
 import json
+import html
 from datetime import datetime
 import streamlit as st
 import pandas as pd
@@ -44,7 +45,7 @@ def render():
             Admin Dashboard
         </div>
         <div style="font-size:0.82rem;color:#F5A623;margin-top:4px;">
-            Logged in as {user.get('email')} — admin access
+            Logged in as {html.escape(user.get('email', ''))} — admin access
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -143,7 +144,7 @@ def render():
                            if user_map.get(r.get("user_id"), "— No User —") == filter_user]
                 st.markdown(
                     f'<div style="color:#8D9BAD;font-size:0.78rem;margin-bottom:10px;">'
-                    f'Showing {len(records)} record(s) for {filter_user}</div>',
+                    f'Showing {len(records)} record(s) for {html.escape(filter_user)}</div>',
                     unsafe_allow_html=True
                 )
 

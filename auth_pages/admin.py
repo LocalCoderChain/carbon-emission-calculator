@@ -35,6 +35,7 @@ def render():
     session.require_admin()   # stops rendering if not admin
 
     user = session.current_user()
+    admin_email = user.get("email", "unknown")
 
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#003057,#005288);
@@ -277,7 +278,7 @@ def render():
                 )
             with ec3:
                 if st.button("Save", key=f"ef_save_{key}"):
-                    ok, msg = cfg.set(key, str(new_val))
+                    ok, msg = cfg.set(key, str(new_val), changed_by=admin_email)
                     st.toast(f"✓ {label} updated" if ok else f"✗ {msg}")
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -313,7 +314,7 @@ def render():
                 )
             with tc3:
                 if st.button("Save", key=f"tf_save_{key}"):
-                    ok, msg = cfg.set(key, str(new_val))
+                    ok, msg = cfg.set(key, str(new_val), changed_by=admin_email)
                     st.toast(f"✓ {label} updated" if ok else f"✗ {msg}")
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -331,7 +332,7 @@ def render():
             try:
                 parsed = json.loads(new_ply)
                 assert isinstance(parsed, list) and all(isinstance(x, int) for x in parsed)
-                ok, msg = cfg.set("ply_options", new_ply)
+                ok, msg = cfg.set("ply_options", new_ply, changed_by=admin_email)
                 st.toast(f"✓ Ply options updated" if ok else f"✗ {msg}")
             except Exception:
                 st.error("Invalid format. Must be a JSON list of integers, e.g. [3, 5, 7]")
@@ -348,7 +349,7 @@ def render():
             try:
                 parsed = json.loads(new_pt)
                 assert isinstance(parsed, list) and all(isinstance(x, str) for x in parsed)
-                ok, msg = cfg.set("plastic_types", new_pt)
+                ok, msg = cfg.set("plastic_types", new_pt, changed_by=admin_email)
                 st.toast(f"✓ Plastic types updated" if ok else f"✗ {msg}")
             except Exception:
                 st.error('Invalid format. Must be a JSON list of strings, e.g. ["LDPE","PP"]')
@@ -383,7 +384,7 @@ def render():
                 )
             with pc3:
                 if st.button("Save", key=f"pc_save_{key}"):
-                    ok, msg = cfg.set(key, str(int(new_val)))
+                    ok, msg = cfg.set(key, str(int(new_val)), changed_by=admin_email)
                     st.toast(f"✓ {label} updated" if ok else f"✗ {msg}")
 
         st.markdown("---")
@@ -393,6 +394,99 @@ def render():
             use_container_width=True,
             hide_index=True
         )
+
+        st.markdown("---")
+        st.markdown("### Change History")
+        st.caption(
+            "Every config edit is logged (append-only); the latest 100 are shown. "
+            "Reverting restores the old value and is itself logged as a new entry. "
+            "A change can only be reverted while it is still the current value."
+        )
+
+        if st.session_state.get("_cfg_revert_msg"):
+            st.toast(st.session_state.pop("_cfg_revert_msg"))
+
+        history = cfg.get_history(limit=100)
+        if not history:
+            st.info("No config changes recorded yet.")
+        else:
+            def _short(v, n=40):
+                v = "" if v is None else str(v)
+                return v if len(v) <= n else v[: n - 1] + "…"
+
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "ID": h["id"], "When": h["changed_at"], "Key": h["key"],
+                        "Old": _short(h["old_value"]), "New": _short(h["new_value"]),
+                        "Changed by": h["changed_by"],
+                    }
+                    for h in history
+                ]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            by_id = {h["id"]: h for h in history}
+            pick = st.selectbox(
+                "Revert a change",
+                options=list(by_id.keys()),
+                format_func=lambda i: (
+                    f"#{i} · {by_id[i]['key']}: "
+                    f"{_short(by_id[i]['new_value'], 20)} → {_short(by_id[i]['old_value'], 20)}"
+                ),
+                key="cfg_revert_pick",
+            )
+
+            # Runs as a button callback (before the next rerun) so we may also
+            # clear the number_input widget states that hold the stale value.
+            def _revert(change_id: int):
+                h = by_id[change_id]
+                k = h["key"]
+                restored = h["old_value"] or ""
+                current = cfg.get(k)
+
+                # Only undo a change that is still the live one. Otherwise a
+                # revert would silently overwrite newer edits (or do nothing).
+                if current == restored:
+                    st.session_state["_cfg_revert_msg"] = f"ℹ {k} is already at that value."
+                    return
+                if current != h["new_value"]:
+                    st.session_state["_cfg_revert_msg"] = (
+                        f"✗ {k} was changed again after #{change_id}. "
+                        "Revert the newer change first."
+                    )
+                    return
+
+                ok, msg = cfg.set(
+                    k, restored,
+                    changed_by=f"{admin_email} (revert of #{change_id})",
+                )
+                st.session_state["_cfg_revert_msg"] = (
+                    f"✓ Reverted {k}" if ok else f"✗ {msg}"
+                )
+                if not ok:
+                    return
+
+                # Assign (don't pop) the restored value to whichever widget
+                # shows this key: popping leaves the browser's copy of the
+                # widget state in place, so the input would keep showing the
+                # reverted-away value. The DB is already correct at this point,
+                # so a bad value here must not break the page.
+                try:
+                    if k in ("ply_options", "plastic_types"):
+                        st.session_state["cfg_ply" if k == "ply_options" else "cfg_pt"] = restored
+                    elif k.startswith("emission_"):
+                        st.session_state[f"ef_{k}"] = float(restored)
+                    elif k.startswith("transport_"):
+                        st.session_state[f"tf_{k}"] = float(restored)
+                    else:
+                        st.session_state[f"pc_{k}"] = int(float(restored))
+                except (ValueError, TypeError):
+                    pass
+
+            st.button("Revert selected change", key="cfg_revert_btn",
+                      on_click=_revert, args=(pick,))
 
     # ═══════════════════════════════════════════════════════════════════════
     # TAB 6 — ACTIVE SESSIONS

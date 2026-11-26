@@ -530,6 +530,18 @@ class ConfigManager:
                 updated_at TEXT
             )
         """)
+        # Append-only audit trail: rows are only ever INSERTed, never updated
+        # or deleted, so every admin edit stays visible and revertible.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS config_history (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                key        TEXT NOT NULL,
+                old_value  TEXT,
+                new_value  TEXT NOT NULL,
+                changed_by TEXT NOT NULL,
+                changed_at TEXT NOT NULL
+            )
+        """)
         for key, value, label in _DEFAULT_CONFIG:
             conn.execute(
                 "INSERT OR IGNORE INTO config (key, value, label, updated_at) VALUES (?,?,?,?)",
@@ -570,17 +582,53 @@ class ConfigManager:
         conn.close()
         return [{"key": r[0], "value": r[1], "label": r[2], "updated_at": r[3]} for r in rows]
 
-    def set(self, key: str, value: str) -> tuple[bool, str]:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn = self._conn()
+    def set(self, key: str, value: str, changed_by: str = "unknown") -> tuple[bool, str]:
+        """
+        Update a config value and record the change in config_history.
+        The UPDATE and the history INSERT share one transaction, so a value
+        can never change without a matching audit row (or vice versa).
+        """
+        now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        value = str(value)
+        conn  = self._conn()
         try:
-            conn.execute("UPDATE config SET value=?, updated_at=? WHERE key=?", (str(value), now, key))
+            row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+            if row is None:
+                return False, f"Unknown config key '{key}'."
+            old_value = row[0]
+            if old_value == value:
+                return True, f"Config '{key}' unchanged."
+
+            conn.execute("UPDATE config SET value=?, updated_at=? WHERE key=?", (value, now, key))
+            conn.execute(
+                "INSERT INTO config_history (key, old_value, new_value, changed_by, changed_at) "
+                "VALUES (?,?,?,?,?)",
+                (key, old_value, value, changed_by, now),
+            )
             conn.commit()
             return True, f"Config '{key}' updated."
         except Exception as e:
+            conn.rollback()
             return False, f"Could not update: {e}"
         finally:
             conn.close()
+
+    def get_history(self, key: str | None = None, limit: int = 100) -> list[dict]:
+        """Most recent config changes first; optionally filtered to one key."""
+        conn = self._conn()
+        sql  = "SELECT id, key, old_value, new_value, changed_by, changed_at FROM config_history"
+        args: tuple = ()
+        if key:
+            sql += " WHERE key=?"
+            args = (key,)
+        sql += " ORDER BY id DESC LIMIT ?"
+        rows = conn.execute(sql, args + (limit,)).fetchall()
+        conn.close()
+        return [
+            {"id": r[0], "key": r[1], "old_value": r[2], "new_value": r[3],
+             "changed_by": r[4], "changed_at": r[5]}
+            for r in rows
+        ]
 
     def build_emission_factors(self) -> dict:
         return {

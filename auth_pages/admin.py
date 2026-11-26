@@ -398,8 +398,9 @@ def render():
         st.markdown("---")
         st.markdown("### Change History")
         st.caption(
-            "Every config edit is logged (append-only). Reverting restores the "
-            "old value and is itself logged as a new entry."
+            "Every config edit is logged (append-only); the latest 100 are shown. "
+            "Reverting restores the old value and is itself logged as a new entry. "
+            "A change can only be reverted while it is still the current value."
         )
 
         if st.session_state.get("_cfg_revert_msg"):
@@ -441,17 +442,38 @@ def render():
             # clear the number_input widget states that hold the stale value.
             def _revert(change_id: int):
                 h = by_id[change_id]
+                k = h["key"]
+                restored = h["old_value"] or ""
+                current = cfg.get(k)
+
+                # Only undo a change that is still the live one. Otherwise a
+                # revert would silently overwrite newer edits (or do nothing).
+                if current == restored:
+                    st.session_state["_cfg_revert_msg"] = f"ℹ {k} is already at that value."
+                    return
+                if current != h["new_value"]:
+                    st.session_state["_cfg_revert_msg"] = (
+                        f"✗ {k} was changed again after #{change_id}. "
+                        "Revert the newer change first."
+                    )
+                    return
+
                 ok, msg = cfg.set(
-                    h["key"], h["old_value"] or "",
+                    k, restored,
                     changed_by=f"{admin_email} (revert of #{change_id})",
                 )
+                st.session_state["_cfg_revert_msg"] = (
+                    f"✓ Reverted {k}" if ok else f"✗ {msg}"
+                )
+                if not ok:
+                    return
+
                 # Assign (don't pop) the restored value to whichever widget
                 # shows this key: popping leaves the browser's copy of the
                 # widget state in place, so the input would keep showing the
-                # reverted-away value.
-                if ok:
-                    restored = h["old_value"] or ""
-                    k = h["key"]
+                # reverted-away value. The DB is already correct at this point,
+                # so a bad value here must not break the page.
+                try:
                     if k in ("ply_options", "plastic_types"):
                         st.session_state["cfg_ply" if k == "ply_options" else "cfg_pt"] = restored
                     elif k.startswith("emission_"):
@@ -460,9 +482,8 @@ def render():
                         st.session_state[f"tf_{k}"] = float(restored)
                     else:
                         st.session_state[f"pc_{k}"] = int(float(restored))
-                st.session_state["_cfg_revert_msg"] = (
-                    f"✓ Reverted {h['key']}" if ok else f"✗ {msg}"
-                )
+                except (ValueError, TypeError):
+                    pass
 
             st.button("Revert selected change", key="cfg_revert_btn",
                       on_click=_revert, args=(pick,))

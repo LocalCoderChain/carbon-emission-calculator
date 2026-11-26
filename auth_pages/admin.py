@@ -28,6 +28,52 @@ db  = DatabaseManager(DB_CONFIG)
 cfg = ConfigManager(db_path)
 sm  = SessionManager(db_path)
 
+# Values the calculation code actually understands. Anything else would fall
+# through to a silent 0 in formulas.py / ConfigManager.build_plastic_factors,
+# i.e. "free" packaging, so reject it at the admin form instead.
+_SUPPORTED_PLIES    = {3, 5, 7}                                 # corrugated_box_weight()
+_SUPPORTED_PLASTICS = {"LDPE", "HDPE", "PP", "LLDPE", "PS"}     # have an emission_* factor
+
+# Generous (min, max) per pallet constant. Zero/negative values would break
+# the maths (pallet_density is a divisor in formulas.py); the ceilings only
+# catch typos. box_clearance may legitimately be 0.
+_PALLET_BOUNDS = {
+    "pallet_density": (1, 5000),
+    "box_clearance":  (0, 1000),
+}
+_PALLET_DEFAULT_BOUNDS = (1, 10000)
+_FACTOR_MAX = 100.0   # kgCO2/kg or kgCO2/t·km — catches 0.492 typed as 492
+
+
+def _validate_ply_options(parsed) -> str | None:
+    """Return an error message, or None if the ply list is acceptable."""
+    if not isinstance(parsed, list) or not parsed:
+        return "Must be a non-empty JSON list of integers, e.g. [3, 5, 7]."
+    if not all(isinstance(x, int) and not isinstance(x, bool) for x in parsed):
+        return "Must be a JSON list of integers, e.g. [3, 5, 7]."
+    if len(set(parsed)) != len(parsed):
+        return "Ply options must not contain duplicates."
+    bad = sorted(set(parsed) - _SUPPORTED_PLIES)
+    if bad:
+        return (f"Unsupported ply value(s) {bad}. The weight formula only supports "
+                f"{sorted(_SUPPORTED_PLIES)}; any other value would give a box weight of 0.")
+    return None
+
+
+def _validate_plastic_types(parsed) -> str | None:
+    """Return an error message, or None if every plastic has an emission factor."""
+    if not isinstance(parsed, list) or not parsed:
+        return 'Must be a non-empty JSON list of strings, e.g. ["LDPE","PP"].'
+    if not all(isinstance(x, str) for x in parsed):
+        return 'Must be a JSON list of strings, e.g. ["LDPE","PP"].'
+    if len(set(parsed)) != len(parsed):
+        return "Plastic types must not contain duplicates."
+    bad = [x for x in parsed if x not in _SUPPORTED_PLASTICS]
+    if bad:
+        return (f"Unknown plastic type(s) {bad}: no emission factor is configured for them "
+                f"(would be treated as 0 kgCO₂/kg). Supported: {sorted(_SUPPORTED_PLASTICS)}.")
+    return None
+
 
 def render():
     """Main entry point — called from app.py when page == 'Admin'."""
@@ -271,6 +317,8 @@ def render():
                 new_val = st.number_input(
                     f"kgCO₂/kg",
                     value=current,
+                    min_value=0.0,
+                    max_value=_FACTOR_MAX,
                     step=0.001,
                     format="%.3f",
                     key=f"ef_{key}",
@@ -307,6 +355,8 @@ def render():
                 new_val = st.number_input(
                     "kgCO₂/t·km",
                     value=current,
+                    min_value=0.0,
+                    max_value=_FACTOR_MAX,
                     step=0.001,
                     format="%.4f",
                     key=f"tf_{key}",
@@ -331,11 +381,15 @@ def render():
         if st.button("Save Ply Options", key="cfg_ply_btn"):
             try:
                 parsed = json.loads(new_ply)
-                assert isinstance(parsed, list) and all(isinstance(x, int) for x in parsed)
-                ok, msg = cfg.set("ply_options", new_ply, changed_by=admin_email)
-                st.toast(f"✓ Ply options updated" if ok else f"✗ {msg}")
-            except Exception:
-                st.error("Invalid format. Must be a JSON list of integers, e.g. [3, 5, 7]")
+            except ValueError:
+                st.error("Invalid JSON. Must be a list of integers, e.g. [3, 5, 7]")
+            else:
+                err = _validate_ply_options(parsed)
+                if err:
+                    st.error(err)
+                else:
+                    ok, msg = cfg.set("ply_options", new_ply, changed_by=admin_email)
+                    st.toast(f"✓ Ply options updated" if ok else f"✗ {msg}")
 
         st.markdown("---")
         st.markdown("### Plastic Types")
@@ -348,11 +402,15 @@ def render():
         if st.button("Save Plastic Types", key="cfg_pt_btn"):
             try:
                 parsed = json.loads(new_pt)
-                assert isinstance(parsed, list) and all(isinstance(x, str) for x in parsed)
-                ok, msg = cfg.set("plastic_types", new_pt, changed_by=admin_email)
-                st.toast(f"✓ Plastic types updated" if ok else f"✗ {msg}")
-            except Exception:
-                st.error('Invalid format. Must be a JSON list of strings, e.g. ["LDPE","PP"]')
+            except ValueError:
+                st.error('Invalid JSON. Must be a list of strings, e.g. ["LDPE","PP"]')
+            else:
+                err = _validate_plastic_types(parsed)
+                if err:
+                    st.error(err)
+                else:
+                    ok, msg = cfg.set("plastic_types", new_pt, changed_by=admin_email)
+                    st.toast(f"✓ Plastic types updated" if ok else f"✗ {msg}")
 
         st.markdown("---")
         st.markdown("### Pallet Constants")
@@ -378,8 +436,10 @@ def render():
                     unsafe_allow_html=True
                 )
             with pc2:
+                lo, hi = _PALLET_BOUNDS.get(key, _PALLET_DEFAULT_BOUNDS)
                 new_val = st.number_input(
                     label, value=current, step=1,
+                    min_value=lo, max_value=hi,
                     key=f"pc_{key}", label_visibility="collapsed"
                 )
             with pc3:
